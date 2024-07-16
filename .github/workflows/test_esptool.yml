@@ -14,6 +14,13 @@ jobs:
     - name: Checkout ref commit
       uses: actions/checkout@master
 
+    - name: Get previous version
+      id: get_previous_version
+      env:
+        FILTER: "${{ contains(github.ref_name, 'dev') && 'first' || 'map(select(.prerelease == false)) | first' }} | .tag_name"
+      run: |
+        echo "VERSION=$(curl https://api.github.com/repos/peterdragun/esptool/releases | jq -r '${{env.FILTER}}')"
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@master
       with:

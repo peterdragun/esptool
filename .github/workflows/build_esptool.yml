@@ -99,6 +99,12 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
         shell: bash
+      - name: Get previous version
+        id: get_previous_version
+        env:
+          FILTER: "${{ contains(github.ref_name, 'dev') && 'first' || 'map(select(.prerelease == false)) | first' }} | .tag_name"
+        run: echo "VERSION=$(curl https://api.github.com/repos/peterdragun/esptool/releases | jq -r '${{env.FILTER}}')" >> $GITHUB_OUTPUT
+        shell: bash
       - name: Checkout
         uses: actions/checkout@master
         with:
@@ -109,7 +115,7 @@ jobs:
           pip install --user -e ".[dev]"
       - name: Generate changelog
         run: |
-          cz changelog ${{ steps.get_version.outputs.VERSION }} --template ci/gh_changelog_template.md.j2 --file-name changelog_body.md
+          cz changelog ${{ steps.get_previous_version.outputs.VERSION }}..${{ steps.get_version.outputs.VERSION }} --template ci/gh_changelog_template.md.j2 --file-name changelog_body.md
           cat changelog_body.md
       - name: Download built binaries
         uses: actions/download-artifact@master
