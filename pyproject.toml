@@ -74,7 +74,7 @@
     version = {attr = "esptool.__init__.__version__"}
 
 [tool.commitizen]
-    version = "4.8.0.dev4"
+    version = "4.8.0.dev5"
     tag_format = "v$version"
     changelog_start_rev = "v4.2.1"
     annotated_tag = true
