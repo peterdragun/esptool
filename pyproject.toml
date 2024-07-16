@@ -74,11 +74,9 @@
     version = {attr = "esptool.__init__.__version__"}
 
 [tool.commitizen]
-    version = "4.7.0"
-    update_changelog_on_bump = true
+    version = "4.8.0.dev4"
     tag_format = "v$version"
     changelog_start_rev = "v4.2.1"
-    changelog_merge_prerelease = true
     annotated_tag = true
     bump_message = "change: Update version to $new_version"
     version_files = [

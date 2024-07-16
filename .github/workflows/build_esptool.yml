@@ -89,7 +89,7 @@ jobs:
 
   create_release:
     name: Create GitHub release
-    if: startsWith(github.ref, 'refs/tags/') && !(contains(github.ref_name, 'dev'))
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-esptool-binaries
     runs-on: ubuntu-latest
     permissions:
@@ -127,5 +127,5 @@ jobs:
           body_path: changelog_body.md
           name: Version ${{ steps.get_version.outputs.VERSION }}
           draft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, 'dev') }}
           files: esptool-v${{ steps.get_version.outputs.VERSION }}-*.zip
