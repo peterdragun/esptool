@@ -14,7 +14,6 @@ from .mem_definition import EfuseDefineBlocks
 from .. import util
 from ..base_operations import (
     BaseCommands,
-    CustomMACType,
     NonCompositeTuple,
     TupleParameter,
     add_force_write_always,
@@ -55,9 +54,11 @@ class Esp32C5Commands(BaseCommands):
         @protect_options
         @add_force_write_always
         @add_show_sensitive_info_option
-        def burn_key_cli(**kwargs):
+        @click.pass_context
+        def burn_key_cli(ctx, **kwargs):
             kwargs.pop("force_write_always")
             block, keyfile, keypurpose = zip(*kwargs.pop("block_keyfile_keypurpose"))
+            kwargs["show_sensitive_info"] = ctx.show_sensitive_info
             self.burn_key(block, keyfile, keypurpose, **kwargs)
 
         @cli.command(
@@ -85,9 +86,11 @@ class Esp32C5Commands(BaseCommands):
         @protect_options
         @add_force_write_always
         @add_show_sensitive_info_option
-        def burn_key_digest_cli(**kwargs):
+        @click.pass_context
+        def burn_key_digest_cli(ctx, **kwargs):
             kwargs.pop("force_write_always")
             block, keyfile, keypurpose = zip(*kwargs.pop("block_keyfile_keypurpose"))
+            kwargs["show_sensitive_info"] = ctx.show_sensitive_info
             self.burn_key_digest(block, keyfile, keypurpose, **kwargs)
 
     ###################################### Commands ######################################
