@@ -101,18 +101,13 @@ class EfuseTestCase:
         reset_port.rts = False
 
     def get_esptool(self):
-        if reset_port is not None:
-            import esptool
+        import espefuse
 
-            esp = esptool.cmds.detect_chip(port=arg_port)
-            del esptool
-        else:
-            import espefuse
-
-            efuse = espefuse.SUPPORTED_CHIPS[arg_chip].efuse_lib
-            esp = efuse.EmulateEfuseController(self.efuse_file.name)
-            del espefuse
-            del efuse
+        esp = espefuse.get_esp(
+            port=arg_port,
+            virt=reset_port is None,
+            virt_efuse_file=self.efuse_file.name,
+        )
         return esp
 
     def _set_34_coding_scheme(self):
