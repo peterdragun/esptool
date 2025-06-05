@@ -154,6 +154,16 @@ class EfuseTestCase:
 
     def _run_command(self, cmd, check_msg, ret_code):
         try:
+            env = os.environ.copy()
+            # Comprehensive color disabling and terminal size control
+            env.update(
+                {
+                    "NO_COLOR": "1",
+                    "COLUMNS": "120",  # Set terminal width for help output
+                    "LINES": "24",  # Some terminal may not apply COLUMNS without LINES
+                    "TERM": "dumb",  # Force terminal to dumb mode
+                }
+            )
             p = subprocess.Popen(
                 cmd.split(),
                 shell=False,
@@ -161,8 +171,10 @@ class EfuseTestCase:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
+                env=env,
             )
             output, _ = p.communicate()
+            print(output)
             returncode = p.returncode
             if check_msg:
                 assert check_msg in output
