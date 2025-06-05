@@ -161,6 +161,7 @@ class EfuseTestCase:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
+                env={"NO_COLOR": "1", "COLUMNS": "120"},
             )
             output, _ = p.communicate()
             returncode = p.returncode
