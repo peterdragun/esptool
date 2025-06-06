@@ -37,7 +37,6 @@ SUPPORTED_BURN_COMMANDS = [
     "burn-key-digest",
     "burn-custom-mac",
     "set-flash-voltage",
-    "execute-scripts",
 ]
 
 SUPPORTED_READ_COMMANDS = [
