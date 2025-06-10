@@ -1,0 +1,263 @@
+name: 'Nuitka Multi-Architecture Build'
+description: 'Build Python applications into standalone executables using Nuitka for multiple architectures'
+inputs:
+  python-files:
+    description: 'Space-separated list of Python files to build'
+    required: true
+  output-dir:
+    description: 'Output directory for built executables'
+    required: true
+  include-data-dirs:
+    description: 'JSON array of data directories to include (e.g. [{"src": "./data", "dest": "./data"}])'
+    required: false
+    default: '[]'
+  icon-file:
+    description: 'Path to icon file (Windows only)'
+    required: false
+    default: ''
+  target-platform:
+    description: 'Target platform: windows, linux-amd64, macos-amd64, macos-arm64, linux-armv7, linux-aarch64'
+    required: true
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.11'
+  nuitka-version:
+    description: 'Nuitka version to install'
+    required: false
+    default: 'latest'
+  additional-args:
+    description: 'Additional Nuitka arguments'
+    required: false
+    default: ''
+  pip-extra-index-url:
+    description: 'Extra pip index URL'
+    required: false
+    default: ''
+  install-deps-command:
+    description: 'Command to install project dependencies'
+    required: false
+    default: 'pip install --user -e .'
+  test-command-suffix:
+    description: 'Command suffix to test binaries (e.g. "-h")'
+    required: false
+    default: '-h'
+  additional-packages:
+    description: 'Additional system packages to install (space-separated)'
+    required: false
+    default: ''
+
+outputs:
+  executable-extension:
+    description: 'File extension of built executables'
+    value: ${{ steps.setup-platform.outputs.exe-extension }}
+  build-success:
+    description: 'Whether the build was successful'
+    value: ${{ steps.build.outputs.success }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup platform variables
+      id: setup-platform
+      shell: bash
+      run: |
+        case "${{ inputs.target-platform }}" in
+          windows)
+            echo "exe-extension=.exe" >> $GITHUB_OUTPUT
+            echo "is-windows=true" >> $GITHUB_OUTPUT
+            echo "is-arm=false" >> $GITHUB_OUTPUT
+            echo "runner-arch=x64" >> $GITHUB_OUTPUT
+            ;;
+          linux-amd64)
+            echo "exe-extension=.bin" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-arm=false" >> $GITHUB_OUTPUT
+            echo "runner-arch=x64" >> $GITHUB_OUTPUT
+            ;;
+          macos-amd64|macos-arm64)
+            echo "exe-extension=.bin" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-arm=false" >> $GITHUB_OUTPUT
+            echo "runner-arch=x64" >> $GITHUB_OUTPUT
+            ;;
+          linux-armv7)
+            echo "exe-extension=.bin" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-arm=true" >> $GITHUB_OUTPUT
+            echo "arm-arch=armv7" >> $GITHUB_OUTPUT
+            ;;
+          linux-aarch64)
+            echo "exe-extension=.bin" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-arm=true" >> $GITHUB_OUTPUT
+            echo "arm-arch=aarch64" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Build for ARM architecture
+      if: steps.setup-platform.outputs.is-arm == 'true'
+      uses: uraimo/run-on-arch-action@v2
+      with:
+        arch: ${{ steps.setup-platform.outputs.arm-arch }}
+        distro: ubuntu22.04
+        shell: /bin/bash
+        githubToken: ${{ github.token }}
+        setup: mkdir -p "${PWD}/${{ inputs.output-dir }}"
+        dockerRunArgs: --volume "${PWD}/${{ inputs.output-dir }}:/${{ inputs.output-dir }}"
+        install: |
+          apt-get update -y
+          apt-get install -y software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -y
+          apt-get install --ignore-missing -y python${{ inputs.python-version }} python${{ inputs.python-version }}-dev python3-pip pkg-config openssl libffi-dev libffi7 libssl-dev cargo rustc gcc g++ patchelf ${{ inputs.additional-packages }}
+          python${{ inputs.python-version }} -m pip install --upgrade pip setuptools wheel
+        run: |
+          python${{ inputs.python-version }} -m pip install --upgrade cffi
+          adduser --disabled-password --gecos "" builder
+          chmod -R a+rwx /home/runner/work
+          su builder <<'EOF'
+          export PATH=$PATH:/home/builder/.local/bin
+
+          # Set pip extra index if provided
+          if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+            export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
+          fi
+
+          # Install Nuitka
+          if [ "${{ inputs.nuitka-version }}" = "latest" ]; then
+            python${{ inputs.python-version }} -m pip install nuitka
+          else
+            python${{ inputs.python-version }} -m pip install nuitka==${{ inputs.nuitka-version }}
+          fi
+
+          # Install dependencies
+          python${{ inputs.python-version }} -m ${{ inputs.install-deps-command }}
+
+          # Build each file
+          for file in ${{ inputs.python-files }}; do
+            echo "Building $file for ${{ inputs.target-platform }}..."
+
+            cmd="python${{ inputs.python-version }} -m nuitka --standalone --output-dir=${{ inputs.output-dir }}"
+
+            # Add include-data-dirs using Python script
+            include_flags=$(python${{ inputs.python-version }} $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}')
+            if [ -n "$include_flags" ]; then
+              cmd="$cmd $include_flags"
+            fi
+
+            # Add additional arguments
+            if [ -n "${{ inputs.additional-args }}" ]; then
+              cmd="$cmd ${{ inputs.additional-args }}"
+            fi
+
+            # Add size optimization flags
+            cmd="$cmd --enable-plugin=anti-bloat"
+            cmd="$cmd --noinclude-pytest-mode=nofollow"
+            cmd="$cmd --noinclude-setuptools-mode=nofollow"
+
+            cmd="$cmd $file"
+            echo "Executing: $cmd"
+            eval "$cmd"
+          done
+
+          # Test binaries
+          for file in ${{ inputs.python-files }}; do
+            base_name=$(basename "$file" .py)
+            executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
+            echo "Testing $executable..."
+            "$executable" ${{ inputs.test-command-suffix }} || exit 1
+          done
+          EOF
+
+    - name: Install Nuitka (non-ARM)
+      if: steps.setup-platform.outputs.is-arm != 'true'
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+          export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
+        fi
+
+        if [ "${{ inputs.nuitka-version }}" = "latest" ]; then
+          python -m pip install nuitka
+        else
+          python -m pip install nuitka==${{ inputs.nuitka-version }}
+        fi
+
+    - name: Install project dependencies (non-ARM)
+      if: steps.setup-platform.outputs.is-arm != 'true'
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+          export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
+        fi
+        ${{ inputs.install-deps-command }}
+
+    - name: Build with Nuitka (non-ARM)
+      if: steps.setup-platform.outputs.is-arm != 'true'
+      id: build
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+          export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
+        fi
+
+        # Build each Python file
+        for file in ${{ inputs.python-files }}; do
+          echo "Building $file for ${{ inputs.target-platform }}..."
+
+          # Start building the command
+          cmd="python -m nuitka --standalone --output-dir=${{ inputs.output-dir }}"
+
+          # Add icon for Windows
+          if [ "${{ steps.setup-platform.outputs.is-windows }}" = "true" ] && [ -n "${{ inputs.icon-file }}" ]; then
+            cmd="$cmd --assume-yes-for-downloads --windows-icon-from-ico=${{ inputs.icon-file }}"
+          fi
+
+          # Add include-data-dirs using Python script
+          include_flags=$(python $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}')
+          if [ -n "$include_flags" ]; then
+            cmd="$cmd $include_flags"
+          fi
+
+          # Add additional arguments
+          if [ -n "${{ inputs.additional-args }}" ]; then
+            cmd="$cmd ${{ inputs.additional-args }}"
+          fi
+
+          # Add size optimization flags
+          cmd="$cmd --enable-plugin=anti-bloat"
+          cmd="$cmd --noinclude-pytest-mode=nofollow"
+          cmd="$cmd --noinclude-setuptools-mode=nofollow"
+
+          # Add the file to build
+          cmd="$cmd $file"
+
+          echo "Executing: $cmd"
+          eval "$cmd"
+        done
+
+        echo "success=true" >> $GITHUB_OUTPUT
+
+    - name: Verify builds (non-ARM)
+      if: steps.setup-platform.outputs.is-arm != 'true'
+      shell: bash
+      run: |
+        echo "Verifying built executables..."
+        for file in ${{ inputs.python-files }}; do
+          base_name=$(basename "$file" .py)
+          executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
+
+          if [ -f "$executable" ]; then
+            echo "✓ $executable exists"
+            # Test that it runs
+            if "$executable" ${{ inputs.test-command-suffix }} > /dev/null 2>&1; then
+              echo "✓ $executable runs successfully"
+            else
+              echo "⚠ $executable may have issues"
+            fi
+          else
+            echo "✗ $executable not found"
+            exit 1
+          fi
+        done
