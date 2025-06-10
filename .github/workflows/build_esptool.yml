@@ -34,7 +34,7 @@ jobs:
             apt-get install -y software-properties-common
             add-apt-repository -y ppa:deadsnakes/ppa
             apt-get update -y
-            apt-get install --ignore-missing -y python3.11 python3.11-dev python3-pip pkg-config openssl libffi-dev libssl-dev cargo rustc
+            apt-get install --ignore-missing -y python3.11 python3.11-dev python3-pip pkg-config openssl libffi-dev libssl-dev cargo rustc gcc g++
             python3.11 -m pip install --upgrade pip setuptools wheel
           run: |
             python3.11 -m pip install --upgrade cffi
@@ -51,20 +51,20 @@ jobs:
             fi
 
             # Install dependencies
-            python3.11 -m pip install pyinstaller==6.11.1
+            python3.11 -m pip install nuitka
             python3.11 -m pip install --user -e .
 
-            # Build with PyInstaller
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json:${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json:${{ env.STUBS_DIR }}2/" esptool.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml:${{ env.EFUSE_DIR }}" espefuse.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server.py
+            # Build with Nuitka
+            python3.11 -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} --include-data-dir=${{ env.STUBS_DIR }}1=${{ env.STUBS_DIR }}1 --include-data-dir=${{ env.STUBS_DIR }}2=${{ env.STUBS_DIR }}2 esptool.py
+            python3.11 -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} --include-data-dir=${{ env.EFUSE_DIR }}=${{ env.EFUSE_DIR }} espefuse.py
+            python3.11 -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} espsecure.py
+            python3.11 -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} esp_rfc2217_server.py
 
             # Test binaries
-            ./${{ env.DISTPATH }}/esptool -h || exit 1
-            ./${{ env.DISTPATH }}/espefuse -h || exit 1
-            ./${{ env.DISTPATH }}/espsecure -h || exit 1
-            ./${{ env.DISTPATH }}/esp_rfc2217_server -h || exit 1
+            ./${{ env.DISTPATH }}/esptool.bin -h || exit 1
+            ./${{ env.DISTPATH }}/espefuse.bin -h || exit 1
+            ./${{ env.DISTPATH }}/espsecure.bin -h || exit 1
+            ./${{ env.DISTPATH }}/esp_rfc2217_server.bin -h || exit 1
 
             # Add license and readme
             mv LICENSE README.md ./${{ env.DISTPATH }}
@@ -114,7 +114,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller==6.11.1
+          pip install nuitka
           pip install --user -e .
       - name: Patch version for dev releases
         if: contains(github.ref_name, 'dev')
@@ -122,12 +122,12 @@ jobs:
           echo "Patching version for dev release: ${{ github.ref_name }}"
           python ci/patch_dev_release.py --version ${{ github.ref_name }} esptool/__init__.py
           git diff
-      - name: Build with PyInstaller
+      - name: Build with Nuitka
         run: |
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}2/" esptool.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml${{ matrix.SEPARATOR }}${{ env.EFUSE_DIR }}" espefuse.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server.py
+          python -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} '--windows-icon-from-ico=ci/espressif.ico' --include-data-dir=${{ env.STUBS_DIR }}1=${{ env.STUBS_DIR }}1 --include-data-dir=${{ env.STUBS_DIR }}2=${{ env.STUBS_DIR }}2 esptool.py
+          python -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} '--windows-icon-from-ico=ci/espressif.ico' --include-data-dir=${{ env.EFUSE_DIR }}=${{ env.EFUSE_DIR }} espefuse.py
+          python -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} '--windows-icon-from-ico=ci/espressif.ico' espsecure.py
+          python -m nuitka --onefile --output-dir=./${{ env.DISTPATH }} '--windows-icon-from-ico=ci/espressif.ico' esp_rfc2217_server.py
       - name: Sign binaries
         if: matrix.platform == 'windows' && github.event_name != 'pull_request' && github.repository == 'espressif/esptool'
         env:
