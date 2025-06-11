@@ -240,13 +240,13 @@ runs:
           fi
 
           # Install dependencies
-          python${{ inputs.python-version }} -m ${{ inputs.install-deps-command }}
+          ${{ inputs.install-deps-command }}
 
           # Build each file
           for file in ${{ inputs.python-files }}; do
             echo "Building $file for ${{ inputs.target-platform }}..."
 
-            cmd="python${{ inputs.python-version }} -m nuitka --standalone --output-dir=${{ inputs.output-dir }}"
+            cmd="python${{ inputs.python-version }} -m nuitka --onefile --follow-imports --output-dir=${{ inputs.output-dir }}"
 
             # Add include-data-dirs using Python script
             include_flags=$(python${{ inputs.python-version }} $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}')
@@ -263,6 +263,17 @@ runs:
             cmd="$cmd --enable-plugin=anti-bloat"
             cmd="$cmd --noinclude-pytest-mode=nofollow"
             cmd="$cmd --noinclude-setuptools-mode=nofollow"
+            cmd="$cmd --noinclude-unittest-mode=nofollow"
+
+            # Use --nofollow-import-to for packages without dedicated modes
+            cmd="$cmd --nofollow-import-to=distutils,pip,wheel,pkg_resources"
+            cmd="$cmd --nofollow-import-to=test,tests,testing,doctest"
+            cmd="$cmd --nofollow-import-to=IPython,jupyter,notebook"
+            cmd="$cmd --nofollow-import-to=scipy,matplotlib,pandas"
+            cmd="$cmd --nofollow-import-to=dask,numba"
+            cmd="$cmd --nofollow-import-to=turtle,pdb,pydoc"
+            cmd="$cmd --nofollow-import-to=xml.etree.cElementTree"
+            cmd="$cmd --nofollow-import-to=asyncio.windows_events,asyncio.windows_utils"
 
             cmd="$cmd $file"
             echo "Executing: $cmd"
@@ -274,7 +285,13 @@ runs:
             base_name=$(basename "$file" .py)
             executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
             echo "Testing $executable..."
-            "$executable" ${{ inputs.test-command-suffix }} || exit 1
+            if [ -f "$executable" ]; then
+              echo "✓ $executable exists ($(du -h "$executable" | cut -f1))"
+              "$executable" ${{ inputs.test-command-suffix }} || exit 1
+            else
+              echo "✗ $executable not found"
+              exit 1
+            fi
           done
           EOF
 
@@ -299,6 +316,7 @@ runs:
         if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
           export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
         fi
+
         ${{ inputs.install-deps-command }}
 
     - name: Setup ccache (non-ARM)
@@ -343,12 +361,32 @@ runs:
           echo "Building $file for ${{ inputs.target-platform }}..."
 
           # Start building the command
-          cmd="python -m nuitka --standalone --output-dir=${{ inputs.output-dir }}"
+          cmd="python -m nuitka --onefile --follow-imports --output-dir=${{ inputs.output-dir }}"
 
-          # Add icon for Windows
-          if [ "${{ steps.setup-platform.outputs.is-windows }}" = "true" ] && [ -n "${{ inputs.icon-file }}" ]; then
-            cmd="$cmd --assume-yes-for-downloads --windows-icon-from-ico=${{ inputs.icon-file }}"
+          # Windows-specific optimizations
+          if [ "${{ steps.setup-platform.outputs.is-windows }}" = "true" ]; then
+            cmd="$cmd --mingw64"
+            if [ -n "${{ inputs.icon-file }}" ]; then
+              cmd="$cmd --assume-yes-for-downloads"
+              cmd="$cmd --windows-icon-from-ico=${{ inputs.icon-file }}"
+            fi
           fi
+
+          # Aggressive size optimizations
+          cmd="$cmd --enable-plugin=anti-bloat"
+          cmd="$cmd --noinclude-pytest-mode=nofollow"
+          cmd="$cmd --noinclude-setuptools-mode=nofollow"
+          cmd="$cmd --noinclude-unittest-mode=nofollow"
+
+          # Use --nofollow-import-to for other packages
+          cmd="$cmd --nofollow-import-to=distutils,pip,wheel,pkg_resources"
+          cmd="$cmd --nofollow-import-to=test,tests,testing,doctest"
+          cmd="$cmd --nofollow-import-to=IPython,jupyter,notebook"
+          cmd="$cmd --nofollow-import-to=scipy,matplotlib,pandas"
+          cmd="$cmd --nofollow-import-to=dask,numba"
+          cmd="$cmd --nofollow-import-to=turtle,pdb,pydoc"
+          cmd="$cmd --nofollow-import-to=xml.etree.cElementTree"
+          cmd="$cmd --nofollow-import-to=asyncio.windows_events,asyncio.windows_utils"
 
           # Add include-data-dirs using Python script
           include_flags=$(python $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}')
@@ -360,11 +398,6 @@ runs:
           if [ -n "${{ inputs.additional-args }}" ]; then
             cmd="$cmd ${{ inputs.additional-args }}"
           fi
-
-          # Add size optimization flags
-          cmd="$cmd --enable-plugin=anti-bloat"
-          cmd="$cmd --noinclude-pytest-mode=nofollow"
-          cmd="$cmd --noinclude-setuptools-mode=nofollow"
 
           # Add the file to build
           cmd="$cmd $file"
@@ -385,7 +418,7 @@ runs:
           executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
 
           if [ -f "$executable" ]; then
-            echo "✓ $executable exists"
+            echo "✓ $executable exists ($(du -h "$executable" | cut -f1))"
             # Test that it runs
             if "$executable" ${{ inputs.test-command-suffix }} > /dev/null 2>&1; then
               echo "✓ $executable runs successfully"
