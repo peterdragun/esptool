@@ -46,6 +46,14 @@ inputs:
     description: 'Additional system packages to install (space-separated)'
     required: false
     default: ''
+  enable-cache:
+    description: 'Enable build caching'
+    required: false
+    default: 'true'
+  cache-key-suffix:
+    description: 'Additional cache key suffix for cache invalidation'
+    required: false
+    default: ''
 
 outputs:
   executable-extension:
@@ -95,6 +103,99 @@ runs:
             ;;
         esac
 
+    - name: Get cache key components
+      id: cache-key
+      shell: bash
+      run: |
+        # Create a hash of source files for cache invalidation
+        if command -v sha256sum >/dev/null 2>&1; then
+          SOURCE_HASH=$(find . -name "*.py" -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+        elif command -v shasum >/dev/null 2>&1; then
+          SOURCE_HASH=$(find . -name "*.py" -type f -exec shasum -a 256 {} \; | shasum -a 256 | cut -d' ' -f1)
+        else
+          SOURCE_HASH=$(date +%Y%m%d)  # Fallback to date
+        fi
+        echo "source-hash=$SOURCE_HASH" >> $GITHUB_OUTPUT
+        echo "python-version=${{ inputs.python-version }}" >> $GITHUB_OUTPUT
+        echo "nuitka-version=${{ inputs.nuitka-version }}" >> $GITHUB_OUTPUT
+
+    - name: Setup cache paths
+      id: cache-paths
+      shell: bash
+      run: |
+        case "${{ inputs.target-platform }}" in
+          windows)
+            echo "nuitka-cache=C:\\Users\\runneradmin\\AppData\\Local\\Nuitka\\Nuitka" >> $GITHUB_OUTPUT
+            echo "ccache-path=C:\\Users\\runneradmin\\AppData\\Local\\ccache" >> $GITHUB_OUTPUT
+            echo "pip-cache=C:\\Users\\runneradmin\\AppData\\Local\\pip\\Cache" >> $GITHUB_OUTPUT
+            ;;
+          macos-*)
+            echo "nuitka-cache=$HOME/Library/Caches/Nuitka" >> $GITHUB_OUTPUT
+            echo "ccache-path=$HOME/Library/Caches/ccache" >> $GITHUB_OUTPUT
+            echo "pip-cache=$HOME/Library/Caches/pip" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "nuitka-cache=$HOME/.cache/nuitka" >> $GITHUB_OUTPUT
+            echo "ccache-path=$HOME/.cache/ccache" >> $GITHUB_OUTPUT
+            echo "pip-cache=$HOME/.cache/pip" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Cache build artifacts
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.cache-paths.outputs.nuitka-cache }}
+          ${{ steps.cache-paths.outputs.ccache-path }}
+          ${{ steps.cache-paths.outputs.pip-cache }}
+        key: build-cache-${{ inputs.target-platform }}-${{ steps.cache-key.outputs.source-hash }}
+        restore-keys: |
+          build-cache-${{ inputs.target-platform }}-
+
+    - name: Cache Nuitka dependencies
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/nuitka
+          ~/.cache/pip
+          ~/.cache/ccache
+        key: nuitka-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-nuitka${{ steps.cache-key.outputs.nuitka-version }}-${{ steps.cache-key.outputs.source-hash }}-${{ inputs.cache-key-suffix }}
+        restore-keys: |
+          nuitka-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-nuitka${{ steps.cache-key.outputs.nuitka-version }}-
+          nuitka-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-
+
+    - name: Cache pip packages
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.local/lib/python*/site-packages
+        key: pip-${{ inputs.target-platform }}-py${{ inputs.python-version }}-${{ hashFiles('**/requirements*.txt', '**/setup.py', '**/pyproject.toml') }}
+        restore-keys: |
+          pip-${{ inputs.target-platform }}-py${{ inputs.python-version }}-
+
+    - name: Cache Nuitka installation
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/lib/python*/site-packages/nuitka*
+          ~/.local/bin/nuitka*
+        key: nuitka-install-${{ inputs.target-platform }}-${{ inputs.nuitka-version }}-py${{ inputs.python-version }}
+
+    - name: Check Nuitka installation
+      id: nuitka-check
+      shell: bash
+      run: |
+        if python -m nuitka --version >/dev/null 2>&1; then
+          echo "installed=true" >> $GITHUB_OUTPUT
+        else
+          echo "installed=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Build for ARM architecture
       if: steps.setup-platform.outputs.is-arm == 'true'
       uses: uraimo/run-on-arch-action@v2
@@ -112,6 +213,13 @@ runs:
           apt-get update -y
           apt-get install --ignore-missing -y python${{ inputs.python-version }} python${{ inputs.python-version }}-dev python3-pip pkg-config openssl libffi-dev libffi7 libssl-dev cargo rustc gcc g++ patchelf ${{ inputs.additional-packages }}
           python${{ inputs.python-version }} -m pip install --upgrade pip setuptools wheel
+          apt-get install -y ccache
+          export CCACHE_DIR=/home/runner/.cache/ccache
+          export CCACHE_MAXSIZE=2G
+          export CCACHE_COMPRESS=1
+          export NUITKA_CCACHE_BINARY=$(which ccache)
+          mkdir -p $CCACHE_DIR
+          chmod 777 $CCACHE_DIR
         run: |
           python${{ inputs.python-version }} -m pip install --upgrade cffi
           adduser --disabled-password --gecos "" builder
@@ -171,7 +279,7 @@ runs:
           EOF
 
     - name: Install Nuitka (non-ARM)
-      if: steps.setup-platform.outputs.is-arm != 'true'
+      if: steps.setup-platform.outputs.is-arm != 'true' && steps.nuitka-check.outputs.installed != 'true'
       shell: bash
       run: |
         if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
@@ -192,6 +300,34 @@ runs:
           export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
         fi
         ${{ inputs.install-deps-command }}
+
+    - name: Setup ccache (non-ARM)
+      if: steps.setup-platform.outputs.is-arm != 'true' && inputs.enable-cache == 'true'
+      shell: bash
+      run: |
+        case "${{ inputs.target-platform }}" in
+          windows)
+            # Nuitka will auto-download ccache on Windows
+            echo "NUITKA_CCACHE_BINARY=auto" >> $GITHUB_ENV
+            ;;
+          macos-*)
+            # Install ccache on macOS
+            if command -v brew >/dev/null 2>&1; then
+              brew install ccache
+            fi
+            echo "NUITKA_CCACHE_BINARY=$(which ccache || echo auto)" >> $GITHUB_ENV
+            ;;
+          *)
+            # Install ccache on Linux
+            sudo apt-get update && sudo apt-get install -y ccache
+            echo "NUITKA_CCACHE_BINARY=$(which ccache)" >> $GITHUB_ENV
+            ;;
+        esac
+
+        # Set ccache options
+        echo "CCACHE_DIR=${{ steps.cache-paths.outputs.ccache-path }}" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+        echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
 
     - name: Build with Nuitka (non-ARM)
       if: steps.setup-platform.outputs.is-arm != 'true'
@@ -261,3 +397,18 @@ runs:
             exit 1
           fi
         done
+
+    - name: Show cache statistics
+      if: inputs.enable-cache == 'true'
+      shell: bash
+      run: |
+        echo "=== Cache Statistics ==="
+        if command -v ccache >/dev/null 2>&1; then
+          echo "ccache stats:"
+          ccache -s || echo "ccache not available"
+        fi
+
+        echo "Cache directories:"
+        du -sh ${{ steps.cache-paths.outputs.nuitka-cache }} 2>/dev/null || echo "Nuitka cache not found"
+        du -sh ${{ steps.cache-paths.outputs.ccache-path }} 2>/dev/null || echo "ccache not found"
+        du -sh ${{ steps.cache-paths.outputs.pip-cache }} 2>/dev/null || echo "pip cache not found"
