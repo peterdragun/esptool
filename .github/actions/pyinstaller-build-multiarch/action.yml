@@ -1,0 +1,367 @@
+name: 'PyInstaller Multi-Architecture Build'
+description: 'Build Python applications into standalone executables using PyInstaller for multiple architectures'
+inputs:
+  python-files:
+    description: 'Space-separated list of Python files to build'
+    required: true
+  output-dir:
+    description: 'Output directory for built executables'
+    required: true
+  include-data-dirs:
+    description: 'JSON array of data directories to include (e.g. [{"src": "./data", "dest": "./data"}])'
+    required: false
+    default: '[]'
+  icon-file:
+    description: 'Path to icon file (Windows only)'
+    required: false
+    default: ''
+  target-platform:
+    description: 'Target platform: windows-amd64, linux-amd64, macos-amd64, macos-arm64, linux-armv7, linux-aarch64'
+    required: true
+  python-version:
+    description: 'Python version to use. Make sure that the version is available on all runners.'
+    required: false
+    default: '3.11'
+  pyinstaller-version:
+    description: 'PyInstaller version to install'
+    required: false
+    default: 'latest'
+  additional-args:
+    description: 'Additional PyInstaller arguments'
+    required: false
+    default: ''
+  pip-extra-index-url:  # TODO: consider removing this
+    description: 'Extra pip index URL'
+    required: false
+    default: ''
+  install-deps-command:
+    description: 'Command to install project dependencies. Command will be executed like `python -m {install-deps-command}`'
+    required: false
+    default: 'pip install --user --prefer-binary -e .'
+  test-command-suffix:
+    description: 'Command suffix to test binaries (e.g. "-h")'
+    required: false
+    default: '-h'
+  additional-packages:  # TODO: consider removing this
+    description: 'Additional system packages to install (space-separated)'
+    required: false
+    default: ''
+  enable-cache:
+    description: 'Enable build caching'
+    required: false
+    default: 'true'
+  cache-key-suffix:
+    description: 'Additional cache key suffix for cache invalidation'
+    required: false
+    default: ''
+
+outputs:
+  executable-extension:
+    description: 'File extension of built executables'
+    value: ${{ steps.setup-platform.outputs.exe-extension }}
+  build-success:
+    description: 'Whether the build was successful'
+    value: ${{ steps.build.outputs.success }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup platform variables
+      id: setup-platform
+      shell: bash
+      run: |
+        case "${{ inputs.target-platform }}" in
+          windows-amd64)
+            echo "exe-extension=.exe" >> $GITHUB_OUTPUT
+            echo "is-windows=true" >> $GITHUB_OUTPUT
+            echo "is-linux-arm=false" >> $GITHUB_OUTPUT
+            echo "data-separator=;" >> $GITHUB_OUTPUT
+            ;;
+          linux-amd64)
+            echo "exe-extension=" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-linux-arm=false" >> $GITHUB_OUTPUT
+            echo "data-separator=:" >> $GITHUB_OUTPUT
+            ;;
+          macos-amd64|macos-arm64)
+            echo "exe-extension=" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-linux-arm=false" >> $GITHUB_OUTPUT
+            echo "data-separator=:" >> $GITHUB_OUTPUT
+            ;;
+          linux-armv7)
+            echo "exe-extension=" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-linux-arm=true" >> $GITHUB_OUTPUT
+            echo "arm-arch=armv7" >> $GITHUB_OUTPUT
+            echo "data-separator=:" >> $GITHUB_OUTPUT
+            ;;
+          linux-aarch64)
+            echo "exe-extension=" >> $GITHUB_OUTPUT
+            echo "is-windows=false" >> $GITHUB_OUTPUT
+            echo "is-linux-arm=true" >> $GITHUB_OUTPUT
+            echo "arm-arch=aarch64" >> $GITHUB_OUTPUT
+            echo "data-separator=:" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Get cache key components  # TODO: consider removing this
+      id: cache-key
+      shell: bash
+      run: |
+        # Create a hash of source files for cache invalidation
+        if command -v sha256sum >/dev/null 2>&1; then
+          SOURCE_HASH=$(find . -name "*.py" -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+        elif command -v shasum >/dev/null 2>&1; then
+          SOURCE_HASH=$(find . -name "*.py" -type f -exec shasum -a 256 {} \; | shasum -a 256 | cut -d' ' -f1)
+        else
+          SOURCE_HASH=$(date +%Y%m%d)  # Fallback to date
+        fi
+        echo "source-hash=$SOURCE_HASH" >> $GITHUB_OUTPUT
+        echo "python-version=${{ inputs.python-version }}" >> $GITHUB_OUTPUT
+        echo "pyinstaller-version=${{ inputs.pyinstaller-version }}" >> $GITHUB_OUTPUT
+
+    - name: Setup cache paths  # TODO: consider removing this
+      id: cache-paths
+      shell: bash
+      run: |
+        case "${{ inputs.target-platform }}" in
+          windows-amd64)
+            echo "pyinstaller-cache=C:\\Users\\runneradmin\\AppData\\Local\\pyinstaller" >> $GITHUB_OUTPUT
+            echo "pip-cache=C:\\Users\\runneradmin\\AppData\\Local\\pip\\Cache" >> $GITHUB_OUTPUT
+            ;;
+          macos-*)
+            echo "pyinstaller-cache=$HOME/Library/Caches/pyinstaller" >> $GITHUB_OUTPUT
+            echo "pip-cache=$HOME/Library/Caches/pip" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "pyinstaller-cache=$HOME/.cache/pyinstaller" >> $GITHUB_OUTPUT
+            echo "pip-cache=$HOME/.cache/pip" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Cache build artifacts  # TODO: consider removing this
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.cache-paths.outputs.pyinstaller-cache }}
+          ${{ steps.cache-paths.outputs.pip-cache }}
+        key: build-cache-${{ inputs.target-platform }}-${{ steps.cache-key.outputs.source-hash }}
+        restore-keys: |
+          build-cache-${{ inputs.target-platform }}-
+
+    - name: Cache PyInstaller dependencies  # TODO: consider removing this
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pyinstaller
+          ~/.cache/pip
+        key: pyinstaller-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-pyinstaller${{ steps.cache-key.outputs.pyinstaller-version }}-${{ steps.cache-key.outputs.source-hash }}-${{ inputs.cache-key-suffix }}
+        restore-keys: |
+          pyinstaller-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-pyinstaller${{ steps.cache-key.outputs.pyinstaller-version }}-
+          pyinstaller-${{ inputs.target-platform }}-py${{ steps.cache-key.outputs.python-version }}-
+
+    - name: Cache pip packages  # TODO: consider removing this
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.local/lib/python*/site-packages
+        key: pip-${{ inputs.target-platform }}-py${{ inputs.python-version }}-${{ hashFiles('**/requirements*.txt', '**/setup.py', '**/pyproject.toml') }}
+        restore-keys: |
+          pip-${{ inputs.target-platform }}-py${{ inputs.python-version }}-
+
+    - name: Cache PyInstaller installation  # TODO: consider removing this
+      if: inputs.enable-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/lib/python*/site-packages/PyInstaller*
+          ~/.local/lib/python*/site-packages/pyinstaller*
+          ~/.local/bin/pyinstaller*
+        key: pyinstaller-install-${{ inputs.target-platform }}-${{ inputs.pyinstaller-version }}-py${{ inputs.python-version }}
+
+    - name: Check PyInstaller installation
+      id: pyinstaller-check
+      shell: bash
+      run: |
+        if python -m PyInstaller --version >/dev/null 2>&1; then
+          echo "installed=true" >> $GITHUB_OUTPUT
+        else
+          echo "installed=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build for ARM architecture
+      if: steps.setup-platform.outputs.is-linux-arm == 'true'
+      uses: uraimo/run-on-arch-action@v2
+      with:
+        arch: ${{ steps.setup-platform.outputs.arm-arch }}
+        distro: ubuntu22.04
+        shell: /bin/bash
+        githubToken: ${{ github.token }}
+        setup: mkdir -p "${PWD}/${{ inputs.output-dir }}"
+        dockerRunArgs: --volume "${PWD}/${{ inputs.output-dir }}:/${{ inputs.output-dir }}"
+        install: |
+          apt-get update -y
+          apt-get install -y software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -y
+          apt-get install --ignore-missing -y python${{ inputs.python-version }} python${{ inputs.python-version }}-dev python3-pip pkg-config openssl libffi-dev libffi7 libssl-dev gcc g++ patchelf binutils ${{ inputs.additional-packages }}
+          python${{ inputs.python-version }} -m pip install --upgrade pip setuptools wheel
+        run: |
+          python${{ inputs.python-version }} -m pip install --upgrade cffi
+          adduser --disabled-password --gecos "" builder
+          chmod -R a+rwx /home/runner/work
+          su builder <<'EOF'
+          export PATH=$PATH:/home/builder/.local/bin
+
+          # Set pip extra index if provided
+          if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+            export PIP_EXTRA_INDEX_URL="${{ inputs.pip-extra-index-url }}"
+          fi
+
+          # Install PyInstaller
+          if [ "${{ inputs.pyinstaller-version }}" = "latest" ]; then
+            python${{ inputs.python-version }} -m pip install pyinstaller
+          else
+            python${{ inputs.python-version }} -m pip install pyinstaller==${{ inputs.pyinstaller-version }}
+          fi
+
+          # Install dependencies
+          ${{ inputs.install-deps-command }}
+
+          # Build each file
+          for file in ${{ inputs.python-files }}; do
+            echo "Building $file for ${{ inputs.target-platform }}..."
+
+            cmd="python${{ inputs.python-version }} -m PyInstaller --onefile --distpath=${{ inputs.output-dir }}"
+
+            # Add --no-isolated flag to prevent subprocess crashes during module analysis
+            # This is especially important on ARM architectures where PyInstaller's isolated
+            # subprocess can crash with exit code -11 when analyzing modules like cryptography
+            cmd="$cmd --no-isolated"
+
+            # Add include-data-dirs using Python script
+            include_flags=$(python${{ inputs.python-version }} $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}' '${{ steps.setup-platform.outputs.data-separator }}')
+            if [ -n "$include_flags" ]; then
+              cmd="$cmd $include_flags"
+            fi
+
+            # Add additional arguments
+            if [ -n "${{ inputs.additional-args }}" ]; then
+              cmd="$cmd ${{ inputs.additional-args }}"
+            fi
+
+            cmd="$cmd $file"
+            echo "Executing: $cmd"
+            eval "$cmd"
+          done
+
+          # Test binaries
+          for file in ${{ inputs.python-files }}; do
+            base_name=$(basename "$file" .py)
+            executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
+            echo "Testing $executable..."
+            if [ -f "$executable" ]; then
+              echo "✓ $executable exists ($(du -h "$executable" | cut -f1))"
+              "$executable" ${{ inputs.test-command-suffix }} || exit 1
+            else
+              echo "✗ $executable not found"
+              exit 1
+            fi
+          done
+          EOF
+
+    - name: Install PyInstaller (non-ARM)
+      if: steps.setup-platform.outputs.is-linux-arm != 'true' && steps.pyinstaller-check.outputs.installed != 'true'
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.pip-extra-index-url }}" ]; then
+          echo "PIP_EXTRA_INDEX_URL=${{ inputs.pip-extra-index-url }}" >> $GITHUB_ENV
+        fi
+
+        if [ "${{ inputs.pyinstaller-version }}" = "latest" ]; then
+          python -m pip install pyinstaller
+        else
+          python -m pip install pyinstaller==${{ inputs.pyinstaller-version }}
+        fi
+
+    - name: Install project dependencies (non-ARM)
+      if: steps.setup-platform.outputs.is-linux-arm != 'true'
+      shell: bash
+      run: ${{ inputs.install-deps-command }}
+
+    - name: Build with PyInstaller (non-ARM)
+      if: steps.setup-platform.outputs.is-linux-arm != 'true'
+      id: build
+      shell: bash
+      run: |
+        # Build each Python file
+        for file in ${{ inputs.python-files }}; do
+          echo "Building $file for ${{ inputs.target-platform }}..."
+
+          # Start building the command
+          cmd="python -m PyInstaller --onefile --distpath=${{ inputs.output-dir }}"
+
+          # Windows-specific options
+          if [ "${{ steps.setup-platform.outputs.is-windows }}" = "true" ]; then
+            if [ -n "${{ inputs.icon-file }}" ]; then
+              cmd="$cmd --icon=${{ inputs.icon-file }}"
+            fi
+          fi
+
+          # Add include-data-dirs using Python script
+          include_flags=$(python $GITHUB_ACTION_PATH/process_include_dirs.py '${{ inputs.include-data-dirs }}' '${{ steps.setup-platform.outputs.data-separator }}')
+          if [ -n "$include_flags" ]; then
+            cmd="$cmd $include_flags"
+          fi
+
+          # Add additional arguments
+          if [ -n "${{ inputs.additional-args }}" ]; then
+            cmd="$cmd ${{ inputs.additional-args }}"
+          fi
+
+          # Add the file to build
+          cmd="$cmd $file"
+
+          echo "Executing: $cmd"
+          eval "$cmd"
+        done
+
+        echo "success=true" >> $GITHUB_OUTPUT
+
+    - name: Verify builds (non-ARM)
+      if: steps.setup-platform.outputs.is-linux-arm != 'true'
+      shell: bash
+      run: |
+        echo "Verifying built executables..."
+        for file in ${{ inputs.python-files }}; do
+          base_name=$(basename "$file" .py)
+          executable="${{ inputs.output-dir }}/${base_name}${{ steps.setup-platform.outputs.exe-extension }}"
+
+          if [ -f "$executable" ]; then
+            echo "✓ $executable exists ($(du -h "$executable" | cut -f1))"
+            # Test that it runs
+            if "$executable" ${{ inputs.test-command-suffix }} > /dev/null 2>&1; then
+              echo "✓ $executable runs successfully"
+            else
+              echo "⚠ $executable may have issues"
+            fi
+          else
+            echo "✗ $executable not found"
+            exit 1
+          fi
+        done
+
+    - name: Show cache statistics
+      if: inputs.enable-cache == 'true'
+      shell: bash
+      run: |
+        echo "=== Cache Statistics ==="
+
+        echo "Cache directories:"
+        du -sh ${{ steps.cache-paths.outputs.pyinstaller-cache }} 2>/dev/null || echo "PyInstaller cache not found"
+        du -sh ${{ steps.cache-paths.outputs.pip-cache }} 2>/dev/null || echo "pip cache not found"
