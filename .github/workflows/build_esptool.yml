@@ -9,71 +9,62 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows, linux-amd64, macos-amd64, macos-arm64, linux-armv7, linux-aarch64]
+        platform: [windows-amd64, linux-amd64, macos-amd64, macos-arm64, linux-armv7, linux-aarch64]
         include:
-        - platform: windows
-          TARGET: windows-amd64
-          EXTEN: .exe
-          SEPARATOR: ';'
-        - platform: linux-amd64
-          runner: ubuntu-22.04
-          target: linux-amd64
-        - platform: macos-amd64
-          runner: macos-13  # Intel-based
-          target: macos-amd64
-        - platform: macos-arm64
-          runner: macos-latest  # ARM-based
-          target: macos-arm64
-        - platform: linux-armv7
-          runner: ubuntu-latest
-          target: armv7
-        - platform: linux-aarch64
-          runner: ubuntu-latest
-          target: aarch64
+          - platform: windows-amd64
+            runner: windows-latest
+          - platform: linux-amd64
+            runner: ubuntu-22.04
+          - platform: macos-amd64
+            runner: macos-13
+          - platform: macos-arm64
+            runner: macos-latest
+          - platform: linux-armv7
+            runner: ubuntu-latest
+          - platform: linux-aarch64
+            runner: ubuntu-latest
     env:
-      DISTPATH: esptool-${{ matrix.target }}
-      STUBS_DIR: ./esptool/targets/stub_flasher/
-      EFUSE_DIR: ./espefuse/efuse_defs/
-      PIP_EXTRA_INDEX_URL: "https://dl.espressif.com/pypi"
+      DISTPATH: esptool-${{ matrix.platform }}
+      STUBS_DIR: esptool/targets/stub_flasher/
+      EFUSE_DIR: espefuse/efuse_defs/
     steps:
       - name: Checkout repository
-        uses: actions/checkout@master
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
-        if: ${{ !startsWith(matrix.platform, 'linux-arm') }}
-        uses: actions/setup-python@master
+        uses: actions/setup-python@v5
+        if: (matrix.platform != 'linux-armv7' && matrix.platform != 'linux-aarch64') || contains(github.ref_name, 'dev')
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install nuitka
-          pip install --user -e .
+          # Python is used only to apply dev-release patch on ARM runners and not packages are installed
+          cache: ${{ matrix.platform != 'linux-armv7' && matrix.platform != 'linux-aarch64' && 'pip' || '' }}
       - name: Patch version for dev releases
         if: contains(github.ref_name, 'dev')
         run: |
           echo "Patching version for dev release: ${{ github.ref_name }}"
           python ci/patch_dev_release.py --version ${{ github.ref_name }} esptool/__init__.py
           git diff
-      - name: Build with Nuitka
-        uses: ./.github/actions/nuitka-build-multiarch
+      - name: Build with PyInstaller
+        uses: ./.github/actions/pyinstaller-build-multiarch
         with:
           python-files: 'esptool.py espefuse.py espsecure.py esp_rfc2217_server.py'
           output-dir: ./${{ env.DISTPATH }}
           include-data-dirs: |
-            [
-              {"src": "${{ env.STUBS_DIR }}1", "dest": "${{ env.STUBS_DIR }}1"},
-              {"src": "${{ env.STUBS_DIR }}2", "dest": "${{ env.STUBS_DIR }}2"},
-              {"src": "${{ env.EFUSE_DIR }}", "dest": "${{ env.EFUSE_DIR }}"}
-            ]
-          icon-file: ${{ matrix.platform == 'windows' && 'ci/espressif.ico' || '' }}
+            {
+              "esptool.py": [
+                {"src": "${{ github.workspace }}/${{ env.STUBS_DIR }}1", "dest": "${{ env.STUBS_DIR }}1"},
+                {"src": "${{ github.workspace }}/${{ env.STUBS_DIR }}2", "dest": "${{ env.STUBS_DIR }}2"}
+              ],
+              "espefuse.py": [
+                {"src": "${{ github.workspace }}/${{ env.EFUSE_DIR }}", "dest": "${{ env.EFUSE_DIR }}"}
+              ]
+            }
+          icon-file: ${{ matrix.platform == 'windows-amd64' && 'ci/espressif.ico' || '' }}
           target-platform: ${{ matrix.platform }}
-          pip-extra-index-url: ${{ env.PIP_EXTRA_INDEX_URL }}
-          # install-deps-command: 'pip install --upgrade pip && pip install --user -e .'
-          additional-packages: ${{ startsWith(matrix.platform, 'linux-arm') && 'build-essential' || '' }}
+          additional-arm-packages: 'openssl libffi-dev libffi7 libssl-dev'
 
       - name: Sign binaries
-        if: matrix.platform == 'windows' && github.event_name != 'pull_request' && github.repository == 'espressif/esptool'
+        if: matrix.platform == 'windows-amd64' && github.event_name != 'pull_request' && github.repository == 'espressif/esptool'
         env:
           CERTIFICATE: ${{ secrets.CERTIFICATE }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -92,11 +83,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.DISTPATH }}
-          path: |
-            ${{ env.DISTPATH }}/*.exe
-            ${{ env.DISTPATH }}/*.bin
-            ${{ env.DISTPATH }}/LICENSE
-            ${{ env.DISTPATH }}/README.md
+          path: ${{ env.DISTPATH }}
 
   create_release:
     name: Create GitHub release
