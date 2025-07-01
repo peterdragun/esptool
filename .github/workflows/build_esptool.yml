@@ -55,10 +55,10 @@ jobs:
             python3.11 -m pip install --user -e .
 
             # Build with PyInstaller
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json:${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json:${{ env.STUBS_DIR }}2/" esptool.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml:${{ env.EFUSE_DIR }}" espefuse.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure.py
-            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server.py
+            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json:${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json:${{ env.STUBS_DIR }}2/" esptool
+            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml:${{ env.EFUSE_DIR }}" espefuse
+            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure
+            pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server
 
             # Test binaries
             ./${{ env.DISTPATH }}/esptool -h || exit 1
@@ -124,10 +124,10 @@ jobs:
           git diff
       - name: Build with PyInstaller
         run: |
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}2/" esptool.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml${{ matrix.SEPARATOR }}${{ env.EFUSE_DIR }}" espefuse.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure.py
-          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server.py
+          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.STUBS_DIR }}1/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}1/" --add-data="${{ env.STUBS_DIR }}2/*.json${{ matrix.SEPARATOR }}${{ env.STUBS_DIR }}2/" esptool
+          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico --add-data="${{ env.EFUSE_DIR }}*.yaml${{ matrix.SEPARATOR }}${{ env.EFUSE_DIR }}" espefuse
+          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico espsecure
+          pyinstaller --distpath ./${{ env.DISTPATH }} -F --icon=ci/espressif.ico esp_rfc2217_server
       - name: Sign binaries
         if: matrix.platform == 'windows' && github.event_name != 'pull_request' && github.repository == 'espressif/esptool'
         env:
