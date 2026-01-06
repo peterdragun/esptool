@@ -59,6 +59,7 @@ jobs:
           icon-file: ${{ matrix.platform == 'windows-amd64' && 'ci/espressif.ico' || '' }}
           target-platform: ${{ matrix.platform }}
           additional-arm-packages: 'openssl libffi-dev libssl-dev libffi7'
+          install-deps-command: ${{ matrix.platform == 'linux-armv7' && 'uv pip install --no-binary cffi,cryptography -e .' || 'uv pip install -e .' }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
