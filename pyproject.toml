@@ -39,6 +39,7 @@
         "intelhex",
         "rich_click<2",
         "click<9",
+        "rich<14.3.0",
     ]
 
 [project.urls]
