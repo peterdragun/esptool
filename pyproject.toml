@@ -38,6 +38,7 @@
         "PyYAML>=5.1",
         "intelhex",
         "rich_click<2",
+        "rich<14.3.0",
         "click<9",
     ]
 
