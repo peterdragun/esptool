@@ -22,6 +22,7 @@ from ..base_operations import (
     add_force_write_always,
     add_show_sensitive_info_option,
 )
+from rich.markup import escape
 
 
 class ESP32Commands(BaseCommands):
@@ -103,7 +104,7 @@ class ESP32Commands(BaseCommands):
         version = self.efuses["MAC_VERSION"].get()
         if version > 0:
             log.print(
-                f"Custom MAC Address version {version}: {self.efuses['CUSTOM_MAC'].get()}"
+                f"Custom MAC Address version {version}: {escape(self.efuses['CUSTOM_MAC'].get())}"
             )
         else:
             log.print("Custom MAC Address is not set in the device.")

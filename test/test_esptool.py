@@ -2265,8 +2265,7 @@ class TestESPObjectOperations(EsptoolTestCase):
 
     @pytest.mark.quick_test
     @pytest.mark.host_test
-    @capture_stdout
-    def test_non_esp_operations(self, fake_out):
+    def test_non_esp_operations(self, capsys):
         image_info("images/bootloader_esp32.bin")
         with open("images/one_kb.bin", "rb") as input:
             try:
@@ -2274,7 +2273,7 @@ class TestESPObjectOperations(EsptoolTestCase):
             finally:
                 os.remove("output.bin")
         version()
-        output = fake_out.getvalue()
+        output = capsys.readouterr().out
         assert "Detected image type: ESP32" in output
         assert "Checksum: 0x83 (valid)" in output
         assert "Wrote 0x2400 bytes to file 'output.bin'" in output
@@ -2363,25 +2362,31 @@ class TestESPObjectOperations(EsptoolTestCase):
 @pytest.mark.host_test
 class TestOldScripts:
     def test_esptool_py(self):
-        output = subprocess.check_output(["esptool.py", "-h"])
+        output = subprocess.check_output(["esptool.py", "-h"], stderr=subprocess.STDOUT)
         decoded = output.decode("utf-8")
         assert "esptool.py" in decoded
         assert "DEPRECATED" in decoded
 
     def test_espefuse_py(self):
-        output = subprocess.check_output(["espefuse.py", "-h"])
+        output = subprocess.check_output(
+            ["espefuse.py", "-h"], stderr=subprocess.STDOUT
+        )
         decoded = output.decode("utf-8")
         assert "espefuse.py" in decoded
         assert "DEPRECATED" in decoded
 
     def test_espsecure_py(self):
-        output = subprocess.check_output(["espsecure.py", "-h"])
+        output = subprocess.check_output(
+            ["espsecure.py", "-h"], stderr=subprocess.STDOUT
+        )
         decoded = output.decode("utf-8")
         assert "espsecure.py" in decoded
         assert "DEPRECATED" in decoded
 
     def test_esp_rfc2217_server_py(self):
-        output = subprocess.check_output(["esp_rfc2217_server.py", "-h"])
+        output = subprocess.check_output(
+            ["esp_rfc2217_server.py", "-h"], stderr=subprocess.STDOUT
+        )
         decoded = output.decode("utf-8")
         assert "esp_rfc2217_server.py" in decoded
         assert "DEPRECATED" in decoded

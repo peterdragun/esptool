@@ -190,7 +190,8 @@ class EfuseTestCase:
                 # (e.g. GH actions, etc.)
                 {
                     "NO_COLOR": "1",
-                    "COLUMNS": "120",  # Set terminal width for help output
+                    # Wide enough that long "read_regs: ..." avoid wrapping by Rich
+                    "COLUMNS": "256",
                     "LINES": "24",  # Some terminal may not apply COLUMNS without LINES
                     "TERM": "dumb",  # Force terminal to dumb mode
                 }
