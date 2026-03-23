@@ -42,7 +42,7 @@ jobs:
           python ci/patch_dev_release.py --version ${{ github.ref_name }} esptool/__init__.py
           git diff
       - name: Build with PyInstaller
-        uses: espressif/python-binary-action@master
+        uses: espressif/python-binary-action@fix/use_wheels_image
         with:
           scripts: 'esptool.py espefuse.py espsecure.py esp_rfc2217_server.py'
           output-dir: ./${{ env.DISTPATH }}
@@ -58,13 +58,14 @@ jobs:
             }
           icon-file: ${{ matrix.platform == 'windows-amd64' && 'ci/espressif.ico' || '' }}
           target-platform: ${{ matrix.platform }}
-          additional-arm-packages: 'openssl libffi-dev libssl-dev libffi7'
+          # additional-arm-packages: 'openssl libffi-dev libssl-dev libffi7'
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-keyvault-uri: ${{ secrets.AZURE_KEYVAULT_URI }}
           azure-keyvault-cert-name: ${{ secrets.AZURE_KEYVAULT_CERT_NAME }}
-          additional-args: "--collect-submodules=rich._unicode_data"
+          # bitstring 4.4+ loads implementation modules dynamically; bundle the whole package (see bitstring#362).
+          additional-args: "--collect-submodules=rich._unicode_data --collect-submodules=bitstring"
       - name: Add license and readme
         shell: bash
         run: mv LICENSE README.md ./${{ env.DISTPATH }}
