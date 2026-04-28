@@ -135,8 +135,84 @@ class TestLogger:
                 bar_length=10,
             )
         output = out.getvalue()
-        assert "Progress: [====>     ]  50.0% (2/4)" in output
-        assert "Progress: [==========] 100.0% (4/4) \n" in output
+        assert "Progress:" in output
+        assert "50.0%" in output
+        assert "\u2501" in output or "\u2500" in output
+        assert "100.0%" in output
+        assert output.endswith("\n")
+
+    def test_progress_context_emits_bars(self, logger):
+        out = StringIO()
+        logger._control_console = None
+        with (
+            patch.object(logger, "_stdout", new=Console(file=out, highlight=False)),
+            patch("sys.stdout", new=out),
+        ):
+            with logger.progress(total=2, description="Step") as bar:
+                bar.update(1)
+                bar.update(1)
+        text = out.getvalue()
+        assert "1/2" in text and "2/2" in text
+
+    def test_stage_collapses_finished_progress_bar(self, logger):
+        """
+        Regression: a completed progress bar inside a stage must be erased by
+        ``stage(finish=True)`` — same as the original esptool logger did. The
+        Rich-based parent emits a single ``\\n`` on the completion call which
+        bypasses our overridden ``print()``; the override of ``progress_bar``
+        in :class:`EsptoolLogger` must count it so the cursor-up + erase-line
+        sequence covers the leftover bar line.
+        """
+        out = StringIO()
+        logger._control_console = None
+        with (
+            patch.object(
+                logger,
+                "_stdout",
+                new=Console(file=out, highlight=False, force_terminal=True),
+            ),
+            patch("sys.stdout", new=out),
+        ):
+            logger.stage()
+            with logger.progress(total=4, description="Reading") as bar:
+                bar.update(2)
+                bar.update(2)
+            logger.stage(finish=True)
+            logger.print("Done.")
+
+        output = out.getvalue()
+        # The parent emits exactly one trailing newline (on the completion
+        # update); ``stage(finish=True)`` must therefore issue exactly one
+        # cursor-up + erase-line pair so the finished bar is gone before
+        # "Done." is printed.
+        assert "\x1b[1A\x1b[2K" in output
+        assert output.rstrip().endswith("Done.")
+        # And the percentage from the bar must NOT survive past "Done." in
+        # the final visible text — i.e. the bar line was actually erased.
+        assert output.count("Done.") == 1
+        assert output.split("Done.")[1].strip() == ""
+
+    def test_progress_bar_outside_stage_does_not_change_newline_count(self, logger):
+        """``_newline_count`` only matters inside an active stage."""
+        out = StringIO()
+        logger._control_console = None
+        logger._newline_count = 0
+        with (
+            patch.object(
+                logger,
+                "_stdout",
+                new=Console(file=out, highlight=False, force_terminal=True),
+            ),
+            patch("sys.stdout", new=out),
+        ):
+            logger.progress_bar(
+                cur_iter=4,
+                total_iters=4,
+                prefix="Done: ",
+                suffix="",
+                bar_length=10,
+            )
+        assert logger._newline_count == 0
 
     def test_set_incomplete_logger(self, logger):
         with pytest.raises(

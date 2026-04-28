@@ -226,23 +226,19 @@ def load_ram(esp: ESPLoader, input: ImageSource) -> None:
     log.stage()
     source = "image" if source is None else f"'{source}'"
     log.print(f"Loading {source} to RAM...")
-    for i, seg in enumerate(image.segments, start=1):
-        size = len(seg.data)
-        log.progress_bar(
-            cur_iter=i,
-            total_iters=len(image.segments),
-            prefix=f"Downloading {size} bytes at {seg.addr:#010x} ",
-            suffix="...",
-        )
+    with log.progress(total=len(image.segments)) as bar:
+        for i, seg in enumerate(image.segments, start=1):
+            size = len(seg.data)
+            bar.update(1, description=f"Downloading {size} bytes at {seg.addr:#010x}")
 
-        esp.mem_begin(
-            size, div_roundup(size, esp.ESP_RAM_BLOCK), esp.ESP_RAM_BLOCK, seg.addr
-        )
-        seq = 0
-        while len(seg.data) > 0:
-            esp.mem_block(seg.data[0 : esp.ESP_RAM_BLOCK], seq)
-            seg.data = seg.data[esp.ESP_RAM_BLOCK :]
-            seq += 1
+            esp.mem_begin(
+                size, div_roundup(size, esp.ESP_RAM_BLOCK), esp.ESP_RAM_BLOCK, seg.addr
+            )
+            seq = 0
+            while len(seg.data) > 0:
+                esp.mem_block(seg.data[0 : esp.ESP_RAM_BLOCK], seq)
+                seg.data = seg.data[esp.ESP_RAM_BLOCK :]
+                seq += 1
     log.stage(finish=True)
     log.print(
         f"Loaded {len(image.segments)} segments from {source} to RAM, "
@@ -299,20 +295,18 @@ def dump_mem(
         + (f" to file '{output}'..." if output else "...")
     )
     t = time.time()
-    # Read the memory in 4-byte chunks.
-    for i in range(size // 4):
-        cur_addr = address + (i * 4)
-        d = esp.read_reg(cur_addr)
-        data.write(struct.pack("<I", d))  # Write 4 bytes to BytesIO
-        # Update progress every 1024 bytes.
-        cur = data.tell()
-        if cur % 1024 == 0 or cur == size:
-            log.progress_bar(
-                cur_iter=data.tell(),
-                total_iters=size,
-                prefix=f"Dumping from {cur_addr:#010x} ",
-                suffix=f" {cur}/{size} bytes...",
-            )
+    prev = 0
+    with log.progress(total=size) as bar:
+        # Read the memory in 4-byte chunks.
+        for i in range(size // 4):
+            cur_addr = address + (i * 4)
+            d = esp.read_reg(cur_addr)
+            data.write(struct.pack("<I", d))  # Write 4 bytes to BytesIO
+            # Update progress every 1024 bytes.
+            cur = data.tell()
+            if cur % 1024 == 0 or cur == size:
+                bar.update(cur - prev, description=f"Dumping from {cur_addr:#010x}")
+                prev = cur
     t = time.time() - t
     speed_msg = " ({:.1f} kbit/s)".format(data.tell() / t * 8 / 1000) if t > 0.0 else ""
     dest_msg = f" to '{output}'" if output else ""
@@ -1129,52 +1123,61 @@ def write_flash(
                         t = time.time()
 
                         timeout = DEFAULT_TIMEOUT
-                        while len(image) >= 0:
-                            if not no_progress:
-                                log.progress_bar(
-                                    cur_iter=image_size - len(image),
-                                    total_iters=image_size,
-                                    prefix="Writing at "
-                                    f"{address + bytes_written:#010x} ",
-                                    suffix=f" {bytes_sent}/{image_size} bytes...",
-                                )
-                            if len(image) == 0:  # All data sent, print 100% and end
-                                break
-                            block = image[0 : esp.FLASH_WRITE_SIZE]
-                            block_len = len(block)
-                            if compress:
-                                # feeding each compressed block into the decompressor
-                                # lets us see block-by-block how much will be written
-                                block_uncompressed = len(decompress.decompress(block))
-                                block_timeout = max(
-                                    DEFAULT_TIMEOUT,
-                                    timeout_per_mb(
-                                        ERASE_WRITE_TIMEOUT_PER_MB, block_uncompressed
-                                    ),
-                                )
-                                if not esp.IS_STUB:
-                                    # ROM code writes block to flash before ACKing
-                                    timeout = block_timeout
-                                # For compressed data, encryption is handled
-                                # via encrypted_write flag
-                                esp.flash_defl_block(block, seq, timeout=timeout)
-                                if esp.IS_STUB:
-                                    # Stub ACKs when block is received, then writes
-                                    # to flash while receiving the block after it
-                                    timeout = block_timeout
-                                bytes_written += block_uncompressed
-                            else:
-                                # Pad the last block
-                                block = block + b"\xff" * (
-                                    esp.FLASH_WRITE_SIZE - block_len
-                                )
-                                esp.flash_block(block, seq, encrypted=encrypted)
-                                bytes_written += (
-                                    block_len  # Count without added padding
-                                )
-                            bytes_sent += block_len
-                            image = image[esp.FLASH_WRITE_SIZE :]
-                            seq += 1
+                        last_sent = -1
+                        with log.progress(total=image_size, disable=no_progress) as bar:
+                            while len(image) >= 0:
+                                current_sent = image_size - len(image)
+                                if not no_progress:
+                                    desc = f"Writing at {address + bytes_written:#010x}"
+                                    if last_sent < 0:
+                                        bar.update(0, description=desc)
+                                        last_sent = 0
+                                    else:
+                                        delta = current_sent - last_sent
+                                        if delta > 0:
+                                            bar.update(delta, description=desc)
+                                            last_sent = current_sent
+                                if len(image) == 0:  # All data sent, print 100% and end
+                                    break
+                                block = image[0 : esp.FLASH_WRITE_SIZE]
+                                block_len = len(block)
+                                if compress:
+                                    # feeding each compressed block into the
+                                    # decompressor lets us see block-by-block
+                                    # how much will be written
+                                    block_uncompressed = len(
+                                        decompress.decompress(block)
+                                    )
+                                    block_timeout = max(
+                                        DEFAULT_TIMEOUT,
+                                        timeout_per_mb(
+                                            ERASE_WRITE_TIMEOUT_PER_MB,
+                                            block_uncompressed,
+                                        ),
+                                    )
+                                    if not esp.IS_STUB:
+                                        # ROM code writes block to flash before ACKing
+                                        timeout = block_timeout
+                                    # For compressed data, encryption is handled
+                                    # via encrypted_write flag
+                                    esp.flash_defl_block(block, seq, timeout=timeout)
+                                    if esp.IS_STUB:
+                                        # Stub ACKs when block is received, then writes
+                                        # to flash while receiving the block after it
+                                        timeout = block_timeout
+                                    bytes_written += block_uncompressed
+                                else:
+                                    # Pad the last block
+                                    block = block + b"\xff" * (
+                                        esp.FLASH_WRITE_SIZE - block_len
+                                    )
+                                    esp.flash_block(block, seq, encrypted=encrypted)
+                                    bytes_written += (
+                                        block_len  # Count without added padding
+                                    )
+                                bytes_sent += block_len
+                                image = image[esp.FLASH_WRITE_SIZE :]
+                                seq += 1
                         break
                     except SerialException:
                         if attempt == esp.WRITE_FLASH_ATTEMPTS or encrypted:
@@ -1734,21 +1737,23 @@ def read_flash(
         returns None after writing to file.
     """
     _set_flash_parameters(esp, flash_size)
-    if no_progress:
-        flash_progress = None
-    else:
-
-        def flash_progress(progress, length, offset):
-            log.progress_bar(
-                cur_iter=progress,
-                total_iters=length,
-                prefix=f"Reading from {offset + progress:#010x} ",
-                suffix=f" {progress}/{length} bytes...",
-            )
-
     log.stage()
     t = time.time()
-    data = esp.read_flash(address, size, flash_progress)
+    if no_progress:
+        data = esp.read_flash(address, size, None)
+    else:
+        last = 0
+        with log.progress(total=size, disable=False) as bar:
+
+            def flash_progress(progress, length, offset):
+                nonlocal last
+                bar.update(
+                    progress - last,
+                    description=f"Reading from {offset + progress:#010x}",
+                )
+                last = progress
+
+            data = esp.read_flash(address, size, flash_progress)
     t = time.time() - t
     speed_msg = " ({:.1f} kbit/s)".format(len(data) / t * 8 / 1000) if t > 0.0 else ""
     dest_msg = f" to '{output}'" if output else ""

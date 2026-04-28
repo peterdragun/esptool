@@ -2265,7 +2265,11 @@ class TestESPObjectOperations(EsptoolTestCase):
 
     @pytest.mark.quick_test
     @pytest.mark.host_test
-    def test_non_esp_operations(self, capsys):
+    def test_non_esp_operations(self, capfd):
+        # Use capfd (file-descriptor capture), not capsys: the EspLog singleton
+        # caches a rich.Console bound to sys.stdout at import time, so patching
+        # sys.stdout afterwards (capsys, StringIO, etc.) does not redirect its
+        # output. capfd captures at fd 1 and works regardless.
         image_info("images/bootloader_esp32.bin")
         with open("images/one_kb.bin", "rb") as input:
             try:
@@ -2273,7 +2277,7 @@ class TestESPObjectOperations(EsptoolTestCase):
             finally:
                 os.remove("output.bin")
         version()
-        output = capsys.readouterr().out
+        output = capfd.readouterr().out
         assert "Detected image type: ESP32" in output
         assert "Checksum: 0x83 (valid)" in output
         assert "Wrote 0x2400 bytes to file 'output.bin'" in output

@@ -26,8 +26,8 @@ class TemplateLogger(EspLogBase):
     """
     Abstract base class for esptool loggers.
 
-    Extends EspLogBase with esptool-specific stage collapsing and progress bar
-    abstractions. Provides default no-op implementations for debug() and die()
+    Extends EspLogBase with esptool-specific stage collapsing.
+    Provides default no-op implementations for debug() and die()
     so existing custom logger subclasses do not need to add those methods.
     """
 
@@ -35,20 +35,6 @@ class TemplateLogger(EspLogBase):
     def stage(self, finish: bool = False):
         """
         Start or finish a new collapsible stage.
-        """
-        pass
-
-    @abstractmethod
-    def progress_bar(
-        self,
-        cur_iter: int,
-        total_iters: int,
-        prefix: str = "",
-        suffix: str = "",
-        bar_length: int = 30,
-    ):
-        """
-        Print a progress bar.
         """
         pass
 
@@ -161,6 +147,15 @@ class EsptoolLogger(EspLog, TemplateLogger):
             if not inst._smart_features:
                 inst._control_console = None
 
+    def _get_interactive_console(self) -> Console | None:
+        """Prefer the control console so progress works when stdout is piped
+        (e.g. idf.py)."""
+        if self._smart_features:
+            console = self._control_stdout()
+            if console is not None:
+                return console
+        return super()._get_interactive_console()
+
     def _control_stdout(self) -> Console | None:
         """Console that emits control codes even when stdout is a pipe
         (e.g. idf.py subprocess)."""
@@ -214,6 +209,45 @@ class EsptoolLogger(EspLog, TemplateLogger):
         """
         super().err(message)
 
+    def progress_bar(
+        self,
+        cur_iter: int,
+        total_iters: int,
+        prefix: str = "",
+        suffix: str = "",
+        bar_length: int = 30,
+    ) -> None:
+        """
+        Render a progress bar via the parent (Rich) implementation, then track
+        the trailing newline emitted on completion so a surrounding
+        :meth:`stage` collapses the finished bar away — preserving the legacy
+        esptool behaviour where a successful read/write/verify only leaves the
+        summary line on screen.
+        """
+        super().progress_bar(cur_iter, total_iters, prefix, suffix, bar_length)
+        # The parent uses ``c.print()`` on a Rich Console, bypassing our
+        # overridden ``print()``. So we never get a chance to bump
+        # ``_newline_count`` for the bar. The Rich path with ``_smart_features``
+        # enabled overwrites the bar in place with ``\r`` + ERASE_IN_LINE on
+        # every update and only emits ``\n`` on the completion call. Count
+        # exactly that one newline so ``stage(finish=True)`` cursor-up + erases
+        # the leftover bar line. Verbose / non-TTY modes set
+        # ``_smart_features=False`` and disable stage collapsing entirely, so
+        # they don't need this.
+        if not self._stage_active or not self._smart_features:
+            return
+        if self._verbosity == Verbosity.SILENT:  # type: ignore
+            return
+        if total_iters < 0:
+            return
+        if total_iters == 0:
+            emitted_newline = True
+        else:
+            clamped = max(0, min(cur_iter, total_iters))
+            emitted_newline = clamped == total_iters
+        if emitted_newline:
+            self._newline_count += 1
+
     def stage(self, finish: bool = False):
         """
         Start or finish a collapsible stage.
@@ -252,46 +286,6 @@ class EsptoolLogger(EspLog, TemplateLogger):
             self._newline_count = 0
         else:
             self._stage_active = True
-
-    def progress_bar(
-        self,
-        cur_iter: int,
-        total_iters: int,
-        prefix: str = "",
-        suffix: str = "",
-        bar_length: int = 30,
-    ):
-        """
-        Call in a loop to print a progress bar overwriting itself in place.
-        If terminal doesn't support smart features, prints each update on a
-        new line.
-        """
-        filled = int(bar_length * cur_iter // total_iters)
-        if filled == bar_length:
-            bar = "=" * bar_length
-        elif filled == 0:
-            bar = " " * bar_length
-        else:
-            bar = f"{'=' * (filled - 1)}>{' ' * (bar_length - filled)}"
-
-        percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
-        bar_str = f"{prefix}[{bar}] {percent:>5}%{suffix} "
-        end = "\n" if cur_iter == total_iters else ""
-        if self._smart_features:
-            console = self._control_stdout()
-            if console is not None:
-                console.print(
-                    Control(ControlType.CARRIAGE_RETURN),
-                    Control((ControlType.ERASE_IN_LINE, 2)),
-                    bar_str,
-                    end=end,
-                )
-                if not end:
-                    console.file.flush()
-            else:
-                self.print(f"\r{bar_str}", end=end)
-        else:
-            self.print(f"\r{bar_str}", end=end)
 
     def set_logger(self, new_logger):
         if not isinstance(new_logger, TemplateLogger):
