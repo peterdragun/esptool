@@ -374,6 +374,8 @@ class TestUF2:
         print(output)
         assert "warning" not in output.lower(), "merge-bin should not output warnings"
 
+        # Rich may soft-wrap long paths across lines; flatten for substring checks.
+        flat_output = output.replace("\n", "")
         exp_list = [
             f"Adding '{f}' at {hex(addr)}" for addr, f in iter_addr_offset_tuples
         ]
@@ -381,7 +383,7 @@ class TestUF2:
             f"bytes to file '{of_name}', ready to be flashed with any ESP USB Bridge"
         ]
         for e in exp_list:
-            assert e in output
+            assert e in flat_output
 
         return of_name
 

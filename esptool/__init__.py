@@ -1203,27 +1203,22 @@ def _main():
     try:
         main()
     except FatalError as e:
-        log.error(f"\nA fatal error occurred: {e}")
-        sys.exit(2)
+        log.die(f"A fatal error occurred: {e}", exit_code=2)
     except serial.serialutil.SerialException as e:
-        log.error(f"\nA serial exception error occurred: {e}")
-        log.error(
+        log.die(
+            f"A serial exception error occurred: {e}\n"
             "Note: This error originates from pySerial. "
             "It is likely not a problem with esptool, "
-            "but with the hardware connection or drivers."
-        )
-        log.error(
+            "but with the hardware connection or drivers.\n"
             "For troubleshooting steps visit: "
-            "https://docs.espressif.com/projects/esptool/en/latest/troubleshooting.html"
+            "https://docs.espressif.com/projects/esptool/en/latest/troubleshooting.html",
+            exit_code=1,
         )
-        sys.exit(1)
     except StopIteration:
         log.error(traceback.format_exc())
-        log.error("A fatal error occurred: The chip stopped responding.")
-        sys.exit(2)
+        log.die("A fatal error occurred: The chip stopped responding.", exit_code=2)
     except KeyboardInterrupt:
-        log.error("KeyboardInterrupt: Run cancelled by user.")
-        sys.exit(2)
+        log.die("KeyboardInterrupt: Run cancelled by user.", exit_code=2)
 
 
 if __name__ == "__main__":

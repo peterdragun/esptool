@@ -40,6 +40,7 @@
         "intelhex",
         "rich_click<2",
         "click<9",
+        "esp-pylib @ git+https://github.com/espressif/esp-pylib.git@phase1",
     ]
 
 [project.urls]
