@@ -2078,26 +2078,39 @@ class TestConfigFile(EsptoolTestCase):
         "[esptool]\nconnect_attempts = 5\nreset_delay = 1\nserial_write_timeout = 12"
     )
 
+    @staticmethod
+    def _unwrap(output: str) -> str:
+        """Collapse Rich-wrapped log lines into a single line for substring asserts.
+
+        ``log.print`` goes through Rich's Console, which wraps at the terminal
+        width (defaulting to 80 cols when stdout is piped, as in these tests).
+        That can break a long ``Loaded custom configuration from <abs path>``
+        message in the middle of the path, so substring assertions against the
+        full string would fail purely because of wrapping. Joining lines makes
+        the assertions resilient to terminal-width differences.
+        """
+        return " ".join(output.split())
+
     @pytest.mark.host_test
     def test_load_config_file(self):
         # Test a valid file is loaded
         config_file_path = os.path.join(os.getcwd(), "esptool.cfg")
         with self.ConfigFile(config_file_path, self.dummy_config):
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Loaded custom configuration from {config_file_path}" in output
-            assert "Ignoring unknown config file option" not in output
+            assert "Ignoring unknown config option" not in output
             assert "Ignoring invalid config file" not in output
 
         # Test invalid files are ignored
         # Wrong section header, no config gets loaded
         with self.ConfigFile(config_file_path, "[wrong section name]"):
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Loaded custom configuration from {config_file_path}" not in output
 
         # Correct header, but options are unparsable
         faulty_config = "[esptool]\nconnect_attempts = 5\nconnect_attempts = 9\n"
         with self.ConfigFile(config_file_path, faulty_config):
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Ignoring invalid config file {config_file_path}" in output
             assert (
                 "option 'connect_attempts' in section 'esptool' already exists"
@@ -2107,13 +2120,13 @@ class TestConfigFile(EsptoolTestCase):
         # Correct header, unknown option (or a typo)
         faulty_config = "[esptool]\nconnect_attempts = 9\ntimoout = 2\nbits = 2"
         with self.ConfigFile(config_file_path, faulty_config):
-            output = self.run_esptool("version")
-            assert "Ignoring unknown config file options: bits, timoout" in output
+            output = self._unwrap(self.run_esptool("version"))
+            assert "Ignoring unknown config options: bits, timoout" in output
 
         # Test other config files (setup.cfg, tox.ini) are loaded
         config_file_path = os.path.join(os.getcwd(), "tox.ini")
         with self.ConfigFile(config_file_path, self.dummy_config):
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Loaded custom configuration from {config_file_path}" in output
 
     @pytest.mark.host_test
@@ -2121,14 +2134,14 @@ class TestConfigFile(EsptoolTestCase):
         config_file_path = os.path.join(TEST_DIR, "custom_file.ini")
         with self.ConfigFile(config_file_path, self.dummy_config):
             # Try first without setting the env var, check that no config gets loaded
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Loaded custom configuration from {config_file_path}" not in output
 
             # Set the env var and try again, check that config was loaded
             tmp = os.environ.get("ESPTOOL_CFGFILE")  # Save the env var if it is set
 
             os.environ["ESPTOOL_CFGFILE"] = config_file_path
-            output = self.run_esptool("version")
+            output = self._unwrap(self.run_esptool("version"))
             assert f"Loaded custom configuration from {config_file_path}" in output
             assert "(set with ESPTOOL_CFGFILE)" in output
 

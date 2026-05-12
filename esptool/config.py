@@ -3,8 +3,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-import configparser
-import os
+from esp_pylib.config import ToolConfig
 
 from .logger import log
 
@@ -26,71 +25,38 @@ CONFIG_OPTIONS = [
     "custom_hard_reset_sequence",
 ]
 
-
-def _validate_config_file(file_path, verbose=False):
-    if not os.path.exists(file_path):
-        return False
-
-    cfg = configparser.RawConfigParser()
-    try:
-        cfg.read(file_path, encoding="UTF-8")
-        # Only consider it a valid config file if it contains [esptool] section
-        if cfg.has_section("esptool"):
-            if verbose:
-                unknown_opts = list(set(cfg.options("esptool")) - set(CONFIG_OPTIONS))
-                unknown_opts.sort()
-                no_of_unknown_opts = len(unknown_opts)
-                if no_of_unknown_opts > 0:
-                    suffix = "s" if no_of_unknown_opts > 1 else ""
-                    log.note(
-                        "Ignoring unknown config file option{}: {}".format(
-                            suffix, ", ".join(unknown_opts)
-                        )
-                    )
-            return True
-    except (UnicodeDecodeError, configparser.Error) as e:
-        if verbose:
-            log.note(f"Ignoring invalid config file {file_path}: {e}")
-    return False
-
-
-def _find_config_file(dir_path, verbose=False):
-    for candidate in ("esptool.cfg", "setup.cfg", "tox.ini"):
-        cfg_path = os.path.join(dir_path, candidate)
-        if _validate_config_file(cfg_path, verbose):
-            return cfg_path
-    return None
+ENV_VAR = "ESPTOOL_CFGFILE"
+SECTION_NAME = "esptool"
+CONFIG_FILENAMES = ["esptool.cfg", "setup.cfg", "tox.ini"]
 
 
 def load_config_file(verbose=False):
-    set_with_env_var = False
-    env_var_path = os.environ.get("ESPTOOL_CFGFILE")
-    if env_var_path is not None and _validate_config_file(env_var_path):
-        cfg_file_path = env_var_path
-        set_with_env_var = True
-    else:
-        home_dir = os.path.expanduser("~")
-        os_config_dir = (
-            f"{home_dir}/.config/esptool"
-            if os.name == "posix"
-            else f"{home_dir}/AppData/Local/esptool/"
-        )
-        # Search priority: 1) current dir, 2) OS specific config dir, 3) home dir
-        for dir_path in (os.getcwd(), os_config_dir, home_dir):
-            cfg_file_path = _find_config_file(dir_path, verbose)
-            if cfg_file_path:
-                break
+    """Locate, parse, and return the esptool configuration.
 
-    cfg = configparser.ConfigParser()
-    cfg["esptool"] = {}  # Create an empty esptool config for when no file is found
+    Returns a ``(parser, path)`` tuple where ``path`` is the absolute path
+    of the loaded file (as a string) or ``None`` when no config was found.
+    The parser always contains an ``[esptool]`` section so callers can use
+    ``parser["esptool"].get(...)`` unconditionally.
 
-    if cfg_file_path is not None:
-        # If config file is found and validated, read and parse it
-        cfg.read(cfg_file_path)
-        if verbose:
-            msg = " (set with ESPTOOL_CFGFILE)" if set_with_env_var else ""
-            log.print(
-                f"Loaded custom configuration from "
-                f"{os.path.abspath(cfg_file_path)}{msg}"
-            )
-    return cfg, cfg_file_path
+    Uses :class:`esp_pylib.config.ToolConfig` for the discovery / parsing /
+    verbose-logging pipeline. The esptool ``log`` instance is passed
+    explicitly so the messages route through esptool's Rich-styled logger
+    rather than relying on the ``EspLog.instance`` global (which is
+    ``None`` at module-import time, where this function is called).
+
+    ``permissive_env_var=True`` preserves esptool's historical behavior of
+    falling back to the standard search path when ``ESPTOOL_CFGFILE``
+    points at a missing file or one without an ``[esptool]`` section,
+    instead of aborting CLI startup.
+    """
+    config = ToolConfig(
+        section_name=SECTION_NAME,
+        config_filenames=CONFIG_FILENAMES,
+        env_var=ENV_VAR,
+        valid_options=CONFIG_OPTIONS,
+        permissive_env_var=True,
+        verbose=verbose,
+        logger=log,
+    )
+    parser, path = config.load()
+    return parser, (str(path) if path is not None else None)
