@@ -7,7 +7,8 @@ import sys
 import rich_click as click
 
 import esptool
-from esptool.cli_util import BaudRateType, ChipType, ResetModeType, SerialPortType
+from esptool.cli_util import BaudRateType, ChipType, ResetModeType
+from esp_pylib.cli_types import SerialPortType
 from esptool.logger import log
 
 from espefuse.cli_util import Group

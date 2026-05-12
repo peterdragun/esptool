@@ -4,6 +4,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import os
 import threading
+from esp_pylib.errors import PortVidPidNotFoundError
+from esp_pylib.serial_ports import get_port_vid_pid
+from esp_pylib.serial_reset import uses_hardware_flow_control
 from esptool.reset import (
     ClassicReset,
     CustomReset,
@@ -38,6 +41,15 @@ class EspPortManager(serial.rfc2217.PortManager):
     def __init__(self, serial_port, connection, esp32r0_delay, logger=None):
         self.esp32r0_delay = esp32r0_delay
         self.is_download_mode = False
+        # CP2102C-class adapters tie CTS to the chip's RTS and need the
+        # flow-control variants of the reset sequences. The port name on
+        # the server side is a real device path, so we can probe its
+        # USB identity once and reuse the result for every reset.
+        try:
+            vid, pid = get_port_vid_pid(serial_port.port)
+        except PortVidPidNotFoundError:
+            vid, pid = None, None
+        self._flow_control = uses_hardware_flow_control((vid, pid))
         super().__init__(serial_port, connection, logger)
 
     def _telnet_process_subnegotiation(self, suboption):
@@ -78,7 +90,7 @@ class EspPortManager(serial.rfc2217.PortManager):
         if cfg_custom_hard_reset_sequence is not None:
             CustomReset(self.serial, cfg_custom_hard_reset_sequence)()
         else:
-            HardReset(self.serial)()
+            HardReset(self.serial, flow_control=self._flow_control)()
 
     def _reset_thread(self):
         """
@@ -96,6 +108,6 @@ class EspPortManager(serial.rfc2217.PortManager):
         if cfg_custom_reset_sequence is not None:
             CustomReset(self.serial, cfg_custom_reset_sequence)()
         elif os.name != "nt":
-            UnixTightReset(self.serial, delay)()
+            UnixTightReset(self.serial, delay, flow_control=self._flow_control)()
         else:
-            ClassicReset(self.serial, delay)()
+            ClassicReset(self.serial, delay, flow_control=self._flow_control)()

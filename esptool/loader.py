@@ -14,6 +14,11 @@ import struct
 import sys
 import time
 
+from esp_pylib.constants import USB_JTAG_SERIAL_PID as PYLIB_USB_JTAG_SERIAL_PID
+from esp_pylib.errors import PortVidPidNotFoundError
+from esp_pylib.serial_ports import get_port_vid_pid
+from esp_pylib.serial_reset import uses_hardware_flow_control
+
 from .config import load_config_file
 from .logger import log
 from .reset import (
@@ -344,8 +349,10 @@ class ESPLoader:
     # instead of the ROM bootloader
     sync_stub_detected = False
 
-    # Device PIDs
-    USB_JTAG_SERIAL_PID = 0x1001
+    # Device PIDs (sourced from esp_pylib.constants for cross-tool consistency;
+    # kept as a class attribute so external code such as espefuse can continue
+    # to read ``esp.USB_JTAG_SERIAL_PID`` without importing esp_pylib directly.)
+    USB_JTAG_SERIAL_PID = PYLIB_USB_JTAG_SERIAL_PID
 
     # Chip IDs that are no longer supported by esptool
     UNSUPPORTED_CHIPS = {
@@ -386,6 +393,7 @@ class ESPLoader:
         self.cache = {
             "flash_id": None,
             "uart_no": None,
+            "usb_vid": None,
             "usb_pid": None,
             "security_info": None,
         }
@@ -653,43 +661,63 @@ class ESPLoader:
             val, _ = self.command()
             self.sync_stub_detected &= val == 0
 
-    def _get_pid(self):
-        if self.cache["usb_pid"] is not None:
-            return self.cache["usb_pid"]
+    def _get_vid_pid(self):
+        """Resolve and cache the active port's USB ``(vid, pid)`` tuple.
+
+        ``(None, None)`` is returned when pyserial isn't usable, when the
+        port isn't a regular ``COM*`` / ``/dev/*`` device, or when the
+        device can't be located in :func:`comports`. The user-facing
+        message that historically followed the lookup is emitted here
+        (rather than at every call site) so callers can stay focused on
+        the value.
+        """
+        if self.cache["usb_pid"] is not None or self.cache["usb_vid"] is not None:
+            return self.cache["usb_vid"], self.cache["usb_pid"]
 
         if list_ports is None:
             log.print(
                 "\nListing all serial ports is currently not available. "
                 "Can't get device PID."
             )
-            return
+            return None, None
         active_port = self._port.port
-
-        # Pyserial only identifies regular ports, URL handlers are not supported
-        if not active_port.lower().startswith(("com", "/dev/")):
+        try:
+            vid, pid = get_port_vid_pid(active_port)
+        except PortVidPidNotFoundError as err:
+            log.print(f"\n{err}")
+            return None, None
+        if pid is None:
             log.print(
-                "\nDevice PID identification is only supported on "
-                "COM and /dev/ serial ports."
+                f"\nFailed to get PID of a device on {active_port}, "
+                "using standard reset sequence."
             )
-            return
-        # Return the real path if the active port is a symlink
-        if active_port.startswith("/dev/") and os.path.islink(active_port):
-            active_port = os.path.realpath(active_port)
+            return vid, None
+        self.cache["usb_vid"] = vid
+        self.cache["usb_pid"] = pid
+        return vid, pid
 
-        active_ports = [active_port]
+    def _get_pid(self):
+        return self._get_vid_pid()[1]
 
-        # The "cu" (call-up) device has to be used for outgoing communication on MacOS
-        if sys.platform == "darwin" and "tty" in active_port:
-            active_ports.append(active_port.replace("tty", "cu"))
-        ports = list_ports.comports()
-        for p in ports:
-            if p.device in active_ports:
-                self.cache["usb_pid"] = p.pid
-                return p.pid
-        log.print(
-            f"\nFailed to get PID of a device on {active_port}, "
-            "using standard reset sequence."
-        )
+    def _uses_hardware_flow_control(self):
+        """Return ``True`` when the attached UART bridge is a CP2102C-class
+        adapter that needs the flow-control reset variants.
+
+        Such adapters tie their CTS line to the chip's RTS, so:
+
+        * the bootloader reset must skip its trailing ``IO0=HIGH`` writes
+          to avoid looping a DTR change back onto RTS and glitching ``EN``;
+        * the hard reset must clear ``HUPCL`` before close (and on Windows,
+          deassert DTR manually) so the kernel's close-time RTS twitch
+          doesn't drag ``EN`` low.
+
+        Detection is done via the shared
+        :data:`esp_pylib.constants.HARDWARE_FLOW_CONTROL_VID_PIDS` list so
+        esptool and esp-idf-monitor agree on which adapters need the
+        workaround.
+        """
+        vid, pid = self._get_vid_pid()
+        return uses_hardware_flow_control((vid, pid))
 
     def _connect_attempt(self, reset_strategy, mode="default-reset"):
         """A single connection attempt"""
@@ -783,18 +811,23 @@ class ESPLoader:
         if mode == "usb-reset" or self._get_pid() == self.USB_JTAG_SERIAL_PID:
             return (USBJTAGSerialReset(self._port),)
 
+        # CP2102C-class adapters (always-on hardware flow control) need
+        # the ``flow_control=True`` variants of the bootloader reset to
+        # avoid an RTS↔DTR feedback loop through the bridge's CTS pin.
+        flow_control = self._uses_hardware_flow_control()
+
         # USB-to-Serial bridge
         if os.name != "nt" and not self._port.name.startswith("rfc2217:"):
             return (
-                UnixTightReset(self._port, delay),
-                UnixTightReset(self._port, extra_delay),
-                ClassicReset(self._port, delay),
-                ClassicReset(self._port, extra_delay),
+                UnixTightReset(self._port, delay, flow_control=flow_control),
+                UnixTightReset(self._port, extra_delay, flow_control=flow_control),
+                ClassicReset(self._port, delay, flow_control=flow_control),
+                ClassicReset(self._port, extra_delay, flow_control=flow_control),
             )
 
         return (
-            ClassicReset(self._port, delay),
-            ClassicReset(self._port, extra_delay),
+            ClassicReset(self._port, delay, flow_control=flow_control),
+            ClassicReset(self._port, extra_delay, flow_control=flow_control),
         )
 
     def connect(
@@ -1833,7 +1866,14 @@ class ESPLoader:
         if cfg_custom_hard_reset_sequence is not None:
             CustomReset(self._port, cfg_custom_hard_reset_sequence)()
         else:
-            HardReset(self._port, uses_usb)()
+            # ``flow_control`` is harmless when ``uses_usb`` is True (the
+            # HardReset class ignores it on the internal-USB path) so we
+            # don't need to gate the detection on the bridge kind.
+            HardReset(
+                self._port,
+                uses_usb,
+                flow_control=self._uses_hardware_flow_control(),
+            )()
 
     def soft_reset(self, stay_in_bootloader):
         if not self.IS_STUB:

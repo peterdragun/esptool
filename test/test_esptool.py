@@ -2430,5 +2430,9 @@ class TestPortFilter(EsptoolTestCase):
 
     def test_port_filter_missing_equal_sign(self):
         """Test CLI with missing equal sign in --port-filter option"""
-        output = self.run_esptool_error("--port-filter name123 flash-id", port=None)
+        # Normalize whitespace so the assertion isn't broken by Rich's
+        # word-wrapping when stdout is a pipe (default 80 cols).
+        output = " ".join(
+            self.run_esptool_error("--port-filter name123 flash-id", port=None).split()
+        )
         assert "Option --port-filter argument must consist of key=value." in output

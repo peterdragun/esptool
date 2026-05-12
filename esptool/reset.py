@@ -4,35 +4,54 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import errno
-import os
-import struct
 import time
 
-from .logger import log
+from esp_pylib.serial_reset import DEFAULT_RESET_DELAY
+from esp_pylib.serial_reset import classic_bootloader_reset
+from esp_pylib.serial_reset import execute_custom_reset
+from esp_pylib.serial_reset import hard_reset
+from esp_pylib.serial_reset import unix_tight_bootloader_reset
+from esp_pylib.serial_reset import usb_jtag_bootloader_reset
+
 from .util import FatalError, PrintOnce
+from .logger import log
 
-# Used for resetting into bootloader on Unix-like systems
-if os.name != "nt":
-    import fcntl
-    import termios
+# DEFAULT_RESET_DELAY is re-exported above so existing imports
+# (`from esptool.reset import DEFAULT_RESET_DELAY` in loader.py and
+# esp_rfc2217_server) keep working without changes.
 
-    # Constants used for terminal status lines reading/setting.
-    # Taken from pySerial's backend for IO:
-    # https://github.com/pyserial/pyserial/blob/master/serial/serialposix.py
-    TIOCMSET = getattr(termios, "TIOCMSET", 0x5418)
-    TIOCMGET = getattr(termios, "TIOCMGET", 0x5415)
-    TIOCM_DTR = getattr(termios, "TIOCM_DTR", 0x002)
-    TIOCM_RTS = getattr(termios, "TIOCM_RTS", 0x004)
-
-DEFAULT_RESET_DELAY = 0.05  # default time to wait before releasing boot pin after reset
+__all__ = [
+    "ClassicReset",
+    "CustomReset",
+    "DEFAULT_RESET_DELAY",
+    "HardReset",
+    "ResetStrategy",
+    "USBJTAGSerialReset",
+    "UnixTightReset",
+]
 
 
 class ResetStrategy:
+    """
+    Wraps a named reset sequence with esptool's retry/reopen behavior.
+
+    The actual DTR/RTS pulse trains live in ``esp_pylib.serial_reset`` so they
+    can be shared with esp-idf-monitor; this class only owns the
+    "open the port if it dropped, retry up to 3 times" policy that is specific
+    to esptool's connect loop.
+    """
+
     print_once = PrintOnce(log.warning)
 
-    def __init__(self, port, reset_delay=DEFAULT_RESET_DELAY):
+    def __init__(self, port, reset_delay=DEFAULT_RESET_DELAY, flow_control=False):
         self.port = port
         self.reset_delay = reset_delay
+        # ``flow_control`` selects the CP2102C-class variant of the underlying
+        # esp_pylib sequence: such adapters tie CTS to the chip's RTS, so the
+        # trailing IO0 / DTR writes have to be skipped (boot reset) and HUPCL
+        # has to be cleared before close (hard reset) to keep the chip from
+        # being held in reset by an RTS twitch on port close.
+        self.flow_control = flow_control
 
     def __call__(self):
         """
@@ -65,30 +84,6 @@ class ResetStrategy:
     def reset(self):
         pass
 
-    def _setDTR(self, state):
-        self.port.setDTR(state)
-
-    def _setRTS(self, state):
-        self.port.setRTS(state)
-        # Work-around for adapters on Windows using the usbser.sys driver:
-        # generate a dummy change to DTR so that the set-control-line-state
-        # request is sent with the updated RTS state and the same DTR state
-        self.port.setDTR(self.port.dtr)
-
-    def _setDTRandRTS(self, dtr=False, rts=False):
-        status = struct.unpack(
-            "I", fcntl.ioctl(self.port.fileno(), TIOCMGET, struct.pack("I", 0))
-        )[0]
-        if dtr:
-            status |= TIOCM_DTR
-        else:
-            status &= ~TIOCM_DTR
-        if rts:
-            status |= TIOCM_RTS
-        else:
-            status &= ~TIOCM_RTS
-        fcntl.ioctl(self.port.fileno(), TIOCMSET, struct.pack("I", status))
-
 
 class ClassicReset(ResetStrategy):
     """
@@ -96,13 +91,9 @@ class ClassicReset(ResetStrategy):
     """
 
     def reset(self):
-        self._setDTR(False)  # IO0=HIGH
-        self._setRTS(True)  # EN=LOW, chip in reset
-        time.sleep(0.1)
-        self._setDTR(True)  # IO0=LOW
-        self._setRTS(False)  # EN=HIGH, chip out of reset
-        time.sleep(self.reset_delay)
-        self._setDTR(False)  # IO0=HIGH, done
+        classic_bootloader_reset(
+            self.port, 0.1, self.reset_delay, flow_control=self.flow_control
+        )
 
 
 class UnixTightReset(ResetStrategy):
@@ -112,14 +103,9 @@ class UnixTightReset(ResetStrategy):
     """
 
     def reset(self):
-        self._setDTRandRTS(False, False)
-        self._setDTRandRTS(True, True)
-        self._setDTRandRTS(False, True)  # IO0=HIGH & EN=LOW, chip in reset
-        time.sleep(0.1)
-        self._setDTRandRTS(True, False)  # IO0=LOW & EN=HIGH, chip out of reset
-        time.sleep(self.reset_delay)
-        self._setDTRandRTS(False, False)  # IO0=HIGH, done
-        self._setDTR(False)  # Needed in some environments to ensure IO0=HIGH
+        unix_tight_bootloader_reset(
+            self.port, 0.1, self.reset_delay, flow_control=self.flow_control
+        )
 
 
 class USBJTAGSerialReset(ResetStrategy):
@@ -129,18 +115,7 @@ class USBJTAGSerialReset(ResetStrategy):
     """
 
     def reset(self):
-        self._setRTS(False)
-        self._setDTR(False)  # Idle
-        time.sleep(0.1)
-        self._setDTR(True)  # Set IO0
-        self._setRTS(False)
-        time.sleep(0.1)
-        self._setRTS(True)  # Reset. Calls inverted to go through (1,1) instead of (0,0)
-        self._setDTR(False)
-        self._setRTS(True)  # RTS set as Windows only propagates DTR on RTS setting
-        time.sleep(0.1)
-        self._setDTR(False)
-        self._setRTS(False)  # Chip out of reset
+        usb_jtag_bootloader_reset(self.port)
 
 
 class HardReset(ResetStrategy):
@@ -149,21 +124,20 @@ class HardReset(ResetStrategy):
     Can be used to reset out of the bootloader or to restart a running app.
     """
 
-    def __init__(self, port, uses_usb=False):
-        super().__init__(port)
+    def __init__(self, port, uses_usb=False, flow_control=False):
+        super().__init__(port, flow_control=flow_control)
         self.uses_usb = uses_usb
 
     def reset(self):
-        self._setRTS(True)  # EN->LOW
         if self.uses_usb:
-            # Give the chip some time to come out of reset,
-            # to be able to handle further DTR/RTS transitions
-            time.sleep(0.2)
-            self._setRTS(False)
-            time.sleep(0.2)
+            # Chips on the internal USB peripheral disappear from the bus
+            # while reset is asserted; the post-release wait gives them time
+            # to re-enumerate before any further DTR/RTS writes. ``flow_control``
+            # is not applicable here because internal-USB chips don't go
+            # through a CP2102C-class UART bridge.
+            hard_reset(self.port, hold_delay=0.2, post_release_delay=0.2)
         else:
-            time.sleep(0.1)
-            self._setRTS(False)
+            hard_reset(self.port, hold_delay=0.1, flow_control=self.flow_control)
 
 
 class CustomReset(ResetStrategy):
@@ -187,24 +161,15 @@ class CustomReset(ResetStrategy):
     "U1,1|U0,1|W0.1|U1,0|W0.05|U0,0" represents the UnixTightReset strategy
     """
 
-    format_dict = {
-        "D": "self.port.setDTR({})",
-        "R": "self.port.setRTS({})",
-        "W": "time.sleep({})",
-        "U": "self._setDTRandRTS({})",
-    }
-
-    def reset(self):
-        exec(self.constructed_strategy)
-
     def __init__(self, port, seq_str):
         super().__init__(port)
-        self.constructed_strategy = self._parse_string_to_seq(seq_str)
+        self.seq_str = seq_str
 
-    def _parse_string_to_seq(self, seq_str):
+    def reset(self):
         try:
-            cmds = seq_str.split("|")
-            fn_calls_list = [self.format_dict[cmd[0]].format(cmd[1:]) for cmd in cmds]
-        except Exception as e:
+            execute_custom_reset(self.port, self.seq_str)
+        except ValueError as e:
+            # Convert esp_pylib's parse error into esptool's FatalError so the
+            # CLI surfaces it with the historical "Invalid custom reset
+            # sequence option format:" prefix that tests/users rely on.
             raise FatalError(f"Invalid custom reset sequence option format: {e}")
-        return "\n".join(fn_calls_list)

@@ -101,13 +101,14 @@ from esptool.cli_util import (
     MutuallyExclusiveOption,
     ResetModeType,
     SpiConnectionType,
-    SerialPortType,
     AutoHex2BinType,
     AddrFilenamePairType,
     parse_port_filters,
     parse_size_arg,
     get_port_list,
 )
+from esp_pylib.cli_types import SerialPortType
+
 
 # Show arguments in the help output, this was default in argparse
 click.rich_click.SHOW_ARGUMENTS = True
@@ -1176,7 +1177,11 @@ def get_default_connected_device(
     before: str = "default-reset",
 ):
     _esp = None
-    for each_port in reversed(serial_list):
+    # ``serial_list`` is already sorted best-candidate-first by
+    # :func:`esptool.cli_util.get_port_list` (Espressif VID first, then known
+    # platform USB device patterns, then anything else), so iterate it in
+    # natural order — no ``reversed()`` needed.
+    for each_port in serial_list:
         log.print(f"Serial port {each_port}:")
         try:
             if chip == "auto":

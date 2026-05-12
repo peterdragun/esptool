@@ -2,7 +2,8 @@ import pytest
 from unittest.mock import patch
 import esptool
 
-# Espressif VID constant (same as in esptool/__init__.py)
+# Espressif USB Vendor ID, used by all official Espressif USB bridges
+# and the ESP32-S2/-S3/-C3/... internal USB peripheral.
 ESPRESSIF_VID = 0x303A
 
 
@@ -17,9 +18,20 @@ class MockPort:
         self.serial_number = serial_number
 
 
+# ``esptool.get_port_list`` delegates to ``esp_pylib.serial_ports.get_port_list``,
+# which calls the local ``_comports`` shim imported from ``serial.tools.list_ports``.
+# Patching it here lets the tests inject a fake port list without needing a real
+# pyserial backend.
+_COMPORTS_PATCH = "esp_pylib.serial_ports._comports"
+
+
 @pytest.mark.host_test
 class TestPortSorting:
-    """Test the port sorting algorithm in get_port_list function"""
+    """Test the port sorting algorithm in get_port_list function.
+
+    esp_pylib returns ports "best candidates first": Espressif VID, then
+    known platform USB device patterns, then anything else.
+    """
 
     def test_linux_port_sorting(self):
         """Test port sorting on Linux platform"""
@@ -34,23 +46,21 @@ class TestPortSorting:
 
         with (
             patch("sys.platform", "linux"),
-            patch("esptool.cli_util.list_ports") as mock_list_ports,
+            patch(_COMPORTS_PATCH, return_value=mock_ports),
         ):
-            mock_list_ports.comports.return_value = mock_ports
-
             result = esptool.get_port_list()
 
-            # Expected sorting order (alphabetically within each group):
-            # 1. Other devices (priority 1)
-            # 2. ttyUSB*/ttyACM* devices (priority 2)
-            # 3. Espressif VID devices (priority 3) - highest priority, appear LAST
+            # Expected sorting order: Espressif VID first (highest priority),
+            # then ttyUSB*/ttyACM* devices, then everything else. Within each
+            # bucket the order is the platform pattern's preference followed by
+            # the device path (alphabetically).
             expected = [
-                "/dev/ttyS0",  # Other
-                "/dev/ttyS1",  # Other
-                "/dev/ttyACM0",  # USB/ACM
-                "/dev/ttyUSB0",  # USB/ACM
-                "/dev/ttyUSB1",  # USB/ACM
                 "/dev/ttyACM1",  # Espressif VID
+                "/dev/ttyUSB0",  # ttyUSB before ttyACM (pattern order)
+                "/dev/ttyUSB1",
+                "/dev/ttyACM0",
+                "/dev/ttyS0",  # other
+                "/dev/ttyS1",
             ]
 
             assert result == expected
@@ -71,22 +81,18 @@ class TestPortSorting:
 
         with (
             patch("sys.platform", "darwin"),
-            patch("esptool.cli_util.list_ports") as mock_list_ports,
+            patch(_COMPORTS_PATCH, return_value=mock_ports),
         ):
-            mock_list_ports.comports.return_value = mock_ports
-
             result = esptool.get_port_list()
 
-            # Expected sorting order (alphabetically within each group):
-            # 1. Other devices (priority 1)
-            # 2. usbserial*/usbmodem* devices (priority 2)
-            # 3. Espressif VID devices (priority 3) - highest priority, appear LAST
-            # Note: wlan-debug, Bluetooth-Incoming-Port, debug-console are excluded
+            # Expected: Espressif VID first, then usbserial*/usbmodem* devices
+            # (usbserial preferred over usbmodem in pattern order).
+            # wlan-debug, Bluetooth-Incoming-Port, debug-console are excluded.
             expected = [
-                "/dev/cu.usbmodem1",  # usbmodem
-                "/dev/cu.usbserial1",  # usbserial
-                "/dev/cu.usbserial2",  # usbserial
                 "/dev/cu.usbmodem2",  # Espressif VID
+                "/dev/cu.usbserial1",  # usbserial first
+                "/dev/cu.usbserial2",
+                "/dev/cu.usbmodem1",
             ]
 
             assert result == expected
@@ -103,27 +109,30 @@ class TestPortSorting:
 
         with (
             patch("sys.platform", "win32"),
-            patch("esptool.cli_util.list_ports") as mock_list_ports,
+            patch(_COMPORTS_PATCH, return_value=mock_ports),
         ):
-            mock_list_ports.comports.return_value = mock_ports
-
             result = esptool.get_port_list()
 
-            # Expected sorting order (alphabetically within each group):
-            # 1. All other COM ports (priority 1)
-            # 2. Espressif VID devices (priority 2) - highest priority, appear LAST
+            # Expected: Espressif VID first, then remaining COM ports sorted by
+            # device path (string sort: "COM1", "COM10", "COM2", "COM3").
             expected = [
-                "COM1",  # Other
-                "COM10",  # Other
-                "COM2",  # Other
-                "COM3",  # Other
                 "COM5",  # Espressif VID
+                "COM1",
+                "COM10",
+                "COM2",
+                "COM3",
             ]
 
             assert result == expected
 
     def test_port_filtering_parameters(self):
-        """Test port filtering with various parameters while maintaining sorting"""
+        """Test port filtering with various parameters while maintaining sorting.
+
+        Note: the ``names`` filter is a case-insensitive substring match against
+        the device path (``port.device``), not against pyserial's ``port.name``
+        / ``port.description``. ``serials`` is a substring match against the
+        device's USB serial number.
+        """
         mock_ports = [
             MockPort(
                 "/dev/ttyUSB0",
@@ -150,26 +159,20 @@ class TestPortSorting:
 
         with (
             patch("sys.platform", "linux"),
-            patch("esptool.cli_util.list_ports") as mock_list_ports,
+            patch(_COMPORTS_PATCH, return_value=mock_ports),
         ):
-            mock_list_ports.comports.return_value = mock_ports
-
-            # Test VID filtering - Espressif devices appear last
+            # VID filtering: Espressif ports only, sorted by device path.
             result = esptool.get_port_list(vids=[ESPRESSIF_VID])
-            expected = ["/dev/ttyUSB1", "/dev/ttyUSB2"]
-            assert result == expected
+            assert result == ["/dev/ttyUSB1", "/dev/ttyUSB2"]
 
-            # Test PID filtering
+            # PID filtering: single match.
             result = esptool.get_port_list(pids=[0x1001])
-            expected = ["/dev/ttyUSB1"]
-            assert result == expected
+            assert result == ["/dev/ttyUSB1"]
 
-            # Test name filtering
-            result = esptool.get_port_list(names=["ESP32"])
-            expected = ["/dev/ttyUSB1", "/dev/ttyUSB2"]
-            assert result == expected
+            # Device-path substring filtering (``names``).
+            result = esptool.get_port_list(names=["ttyUSB1"])
+            assert result == ["/dev/ttyUSB1"]
 
-            # Test serial filtering
+            # USB serial-number substring filtering.
             result = esptool.get_port_list(serials=["ESP"])
-            expected = ["/dev/ttyUSB1", "/dev/ttyUSB2"]
-            assert result == expected
+            assert result == ["/dev/ttyUSB1", "/dev/ttyUSB2"]

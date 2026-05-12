@@ -4,14 +4,15 @@
 
 
 import os
-import sys
 import rich_click as click
+
+from esp_pylib.serial_ports import get_port_list as _pylib_get_port_list
+from esp_pylib.serial_ports import parse_port_filters as _pylib_parse_port_filters
 
 from esptool.bin_image import ESPLoader, intel_hex_to_bin
 from esptool.cmds import detect_flash_size
 from esptool.util import FatalError, flash_size_bytes, strip_chip_name
 from esptool.logger import log
-from esptool.loader import list_ports, ListPortInfo
 from typing import IO, Any
 
 from click.shell_completion import CompletionItem
@@ -101,41 +102,6 @@ class AutoChunkSizeType(AnyIntType):
         if num & 3 != 0:
             raise click.BadParameter("Chunk size should be a 4-byte aligned number.")
         return num
-
-
-class SerialPortType(click.ParamType):
-    """
-    Custom type for serial port with autocomplete support.
-    Provides shell completion for available serial ports.
-    """
-
-    name = "serial-port"
-
-    def convert(
-        self, value: str, param: click.Parameter | None, ctx: click.Context
-    ) -> str:
-        # Just return the value as-is, validation happens elsewhere
-        return value
-
-    def shell_complete(
-        self, ctx: click.Context, param: click.Parameter, incomplete: str
-    ) -> list[CompletionItem]:
-        """Provide shell completion suggestions for serial ports"""
-        available_ports = _get_port_list()
-        # Filter ports that match the incomplete string (case-insensitive)
-        incomplete_lower = incomplete.lower()
-        return [
-            CompletionItem(
-                port.device,
-                help=f"Description: {port.description}, "
-                f"VID: {port.vid}, PID: {port.pid}"
-                # Avoid printing None values
-                if port.vid is not None
-                else None,
-            )
-            for port in reversed(available_ports)
-            if port.device.lower().startswith(incomplete_lower)
-        ]
 
 
 class BaudRateType(click.ParamType):
@@ -523,109 +489,54 @@ def get_port_list(
     names: list[str] = [],
     serials: list[str] = [],
 ) -> list[str]:
-    """Get the list of serial ports names with optional filters.
+    """Return the device paths of matching serial ports (highest priority first).
 
-    For backwards compatibility, this function returns a list of port names.
+    Thin wrapper around :func:`esp_pylib.serial_ports.get_port_list` that
+    projects the ``ListPortInfo`` objects down to device-path strings, which
+    is what esptool's connect loop and the public API contract expect.
+    Ports are sorted "best candidates first" (Espressif VID, then known
+    platform USB patterns, then anything else), so callers can iterate in
+    their natural order without an extra ``reversed()``.
+
+    Signature kept compatible with esptool ``<5.2``: positional or keyword
+    ``vids`` / ``pids`` / ``names`` / ``serials`` lists, returning a list
+    of device-path strings.
     """
-    return [port.device for port in _get_port_list(vids, pids, names, serials)]
-
-
-def _get_port_list(
-    vids: list[str] = [],
-    pids: list[str] = [],
-    names: list[str] = [],
-    serials: list[str] = [],
-) -> list[ListPortInfo]:
-    if list_ports is None:
-        raise FatalError(
-            "Listing all serial ports is currently not available. "
-            "Please try to specify the port when running esptool or update "
-            "the pyserial package to the latest version."
+    return [
+        str(port.device or "")
+        for port in _pylib_get_port_list(
+            vids=vids or None,
+            pids=pids or None,
+            names=names or None,
+            serials=serials or None,
         )
-    ports = []
-    for port in list_ports.comports():
-        if sys.platform == "darwin" and port.device.endswith(
-            ("Bluetooth-Incoming-Port", "wlan-debug", "cu.debug-console")
-        ):
-            continue
-        if vids and (port.vid is None or port.vid not in vids):
-            continue
-        if pids and (port.pid is None or port.pid not in pids):
-            continue
-        if names and (
-            port.name is None or all(name not in port.name for name in names)
-        ):
-            continue
-        if serials and (
-            port.serial_number is None
-            or all(serial not in port.serial_number for serial in serials)
-        ):
-            continue
-        ports.append(port)
-
-    # Constants for sorting optimization
-    ESPRESSIF_VID = 0x303A
-    LINUX_DEVICE_PATTERNS = ("ttyUSB", "ttyACM")
-    MACOS_DEVICE_PATTERNS = ("usbserial", "usbmodem")
-
-    def _port_sort_key_linux(port_info: ListPortInfo) -> tuple[int, str]:
-        if port_info.vid == ESPRESSIF_VID:
-            return (3, port_info.device)
-
-        if any(pattern in port_info.device for pattern in LINUX_DEVICE_PATTERNS):
-            return (2, port_info.device)
-
-        return (1, port_info.device)
-
-    def _port_sort_key_macos(port_info: ListPortInfo) -> tuple[int, str]:
-        if port_info.vid == ESPRESSIF_VID:
-            return (3, port_info.device)
-
-        if any(pattern in port_info.device for pattern in MACOS_DEVICE_PATTERNS):
-            return (2, port_info.device)
-
-        return (1, port_info.device)
-
-    def _port_sort_key_windows(port_info: ListPortInfo) -> tuple[int, str]:
-        if port_info.vid == ESPRESSIF_VID:
-            return (2, port_info.device)
-
-        return (1, port_info.device)
-
-    if sys.platform == "win32":
-        key_func = _port_sort_key_windows
-    elif sys.platform == "darwin":
-        key_func = _port_sort_key_macos
-    else:
-        key_func = _port_sort_key_linux
-
-    sorted_port_info = sorted(ports, key=key_func)
-    return sorted_port_info
+    ]
 
 
 def parse_port_filters(
     value: tuple[str],
 ) -> tuple[list[int], list[int], list[str], list[str]]:
-    """Parse port filter arguments into separate lists for each filter type"""
-    filterVids = []
-    filterPids = []
-    filterNames = []
-    filterSerials = []
-    for f in value:
-        kvp = f.split("=")
-        if len(kvp) != 2:
+    """Parse ``--port-filter key=value`` flags into separate filter lists.
+
+    Returns the historical ``(vids, pids, names, serials)`` 4-tuple so the
+    public API stays compatible with esptool ``<5.2``. Internally delegates
+    to :func:`esp_pylib.serial_ports.parse_port_filters` (which returns a
+    dict shaped for ``get_port_list(**...)``) and re-raises its
+    ``ValueError`` as esptool's :class:`FatalError` with the historical
+    wording the CLI tests and downstream users match on.
+    """
+    try:
+        parsed = _pylib_parse_port_filters(value)
+    except ValueError as exc:
+        msg = str(exc)
+        if "Invalid port filter format" in msg:
             raise FatalError("Option --port-filter argument must consist of key=value.")
-        if kvp[0] == "vid":
-            filterVids.append(arg_auto_int(kvp[1]))
-        elif kvp[0] == "pid":
-            filterPids.append(arg_auto_int(kvp[1]))
-        elif kvp[0] == "name":
-            filterNames.append(kvp[1])
-        elif kvp[0] == "serial":
-            filterSerials.append(kvp[1])
-        else:
+        if "Unknown port filter key" in msg:
             raise FatalError("Option --port-filter argument key not recognized.")
-    return filterVids, filterPids, filterNames, filterSerials
+        # Unrecognized variant (e.g. bad integer literal in ``vid=``);
+        # surface the underlying message so the user can fix it.
+        raise FatalError(str(exc))
+    return parsed["vids"], parsed["pids"], parsed["names"], parsed["serials"]
 
 
 def parse_size_arg(esp: ESPLoader, size: int | str) -> int:
